@@ -116,8 +116,16 @@ def serve(address, port, engines, peer_check, token):
     return server
 
 
+def setup_logging():
+    """Log to a small rotating file (the bridge normally runs hidden, with no console)."""
+    from logging.handlers import RotatingFileHandler
+    from .auth import app_dir
+    handlers = [RotatingFileHandler(app_dir() / "bridge.log", maxBytes=500_000, backupCount=2, encoding="utf-8")]
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
+
+
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    setup_logging()
     port = int(os.environ.get("JARVIS_BRIDGE_PORT", "8787"))
     allowed = os.environ.get("JARVIS_BRIDGE_ALLOWED_NODES")
     peer_check = TailnetPeerCheck(allowed_nodes=set(allowed.split(",")) if allowed else None)
@@ -126,7 +134,7 @@ def main():
     servers = {}
     while True:  # Tailscale may come up after us, so keep trying to bind its address
         wanted = ["127.0.0.1"]
-        ts_ip = peer_check.tailscale_ipv4()
+        ts_ip = None if os.environ.get("JARVIS_BRIDGE_LOOPBACK_ONLY") == "1" else peer_check.tailscale_ipv4()
         if ts_ip:
             wanted.append(ts_ip)
         for address in wanted:
