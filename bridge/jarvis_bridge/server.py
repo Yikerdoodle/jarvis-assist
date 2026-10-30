@@ -1,4 +1,4 @@
-"""HTTP bridge: GET /v1/health and POST /v1/ask (streams newline-delimited JSON)."""
+"""HTTP bridge: GET /v1/health, POST /v1/ask (streams newline-delimited JSON), POST /v1/adb/pair."""
 
 import json
 import logging
@@ -8,6 +8,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__
+from .adbpair import AdbPairer, validate_request
 from .auth import TailnetPeerCheck, load_or_create_token, token_ok
 from .engines import default_engines
 
@@ -16,7 +17,9 @@ MAX_BODY = 256 * 1024
 MAX_TEXT = 8000
 
 
-def make_handler(engines, peer_check, token):
+def make_handler(engines, peer_check, token, pairer=None):
+    pairer = pairer or AdbPairer()
+
     class Handler(BaseHTTPRequestHandler):
         server_version = f"JarvisBridge/{__version__}"
         protocol_version = "HTTP/1.0"  # body streams until the connection closes
@@ -47,6 +50,7 @@ def make_handler(engines, peer_check, token):
             self._send_json(200, {
                 "ok": True, "version": __version__,
                 "engines": {name: engine.status() for name, engine in engines.items()},
+                "adb": pairer.status(),
             })
 
         def do_POST(self):
@@ -57,6 +61,8 @@ def make_handler(engines, peer_check, token):
             except ValueError:
                 length = 0
             raw = self.rfile.read(length) if 0 < length <= MAX_BODY else b""
+            if self.path == "/v1/adb/pair":
+                return self._adb_pair(raw)
             if self.path != "/v1/ask":
                 return self._send_json(404, {"error": "not found"})
             if not self._peer_ok():
@@ -78,6 +84,32 @@ def make_handler(engines, peer_check, token):
             if engine is None:
                 return self._send_json(400, {"error": f"unknown engine {name}"})
             self._stream(engine, req)
+
+        def _adb_pair(self, raw):
+            """The phone hands over a Wireless-debugging pairing code; the PC runs `adb pair` itself.
+
+            Only a device of the owner's own tailnet (checked with tailscale whois) may call this, and it can do
+            nothing but try to pair this PC's adb with the caller's own pairing server using a code the phone
+            is showing. No app token is needed, so the phone-side helper needs no secret. Calls are rate-limited.
+            """
+            if not self._peer_ok():
+                return
+            try:
+                req = json.loads(raw.decode("utf-8"))
+                code, port = req.get("code"), req.get("port")
+            except (ValueError, UnicodeDecodeError, AttributeError):
+                return self._send_json(400, {"error": "bad json"})
+            try:
+                validate_request(code, port)  # malformed requests are refused before they use up the rate limit
+            except ValueError as exc:
+                return self._send_json(400, {"error": str(exc)})
+            if pairer.rate_limited():
+                return self._send_json(429, {"error": "too many pairing attempts, wait a minute"})
+            started = time.monotonic()
+            result = pairer.pair(code, port, self.client_address[0])
+            LOG.info("adb pair paired=%s connected=%s seconds=%.1f", result["paired"], result["connected"],
+                     time.monotonic() - started)
+            self._send_json(200, result)
 
         def _stream(self, engine, req):
             self.send_response(200)
@@ -108,8 +140,8 @@ def make_handler(engines, peer_check, token):
     return Handler
 
 
-def serve(address, port, engines, peer_check, token):
-    server = ThreadingHTTPServer((address, port), make_handler(engines, peer_check, token))
+def serve(address, port, engines, peer_check, token, pairer=None):
+    server = ThreadingHTTPServer((address, port), make_handler(engines, peer_check, token, pairer))
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     LOG.info("listening on %s:%s", address, port)
@@ -131,6 +163,7 @@ def main():
     peer_check = TailnetPeerCheck(allowed_nodes=set(allowed.split(",")) if allowed else None)
     token = load_or_create_token()
     engines = default_engines()
+    pairer = AdbPairer()  # one shared instance, so the rate limit covers every listening address
     servers = {}
     while True:  # Tailscale may come up after us, so keep trying to bind its address
         wanted = ["127.0.0.1"]
@@ -140,7 +173,7 @@ def main():
         for address in wanted:
             if address not in servers:
                 try:
-                    servers[address] = serve(address, port, engines, peer_check, token)
+                    servers[address] = serve(address, port, engines, peer_check, token, pairer)
                 except OSError as exc:
                     LOG.warning("cannot bind %s:%s (%s)", address, port, exc)
         time.sleep(30)
