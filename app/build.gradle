@@ -1,0 +1,45 @@
+plugins {
+    id 'com.android.application'
+}
+
+// The build robot passes these in. Local builds without them get a debug-only version number.
+def buildNumber = (System.getenv('BUILD_NUMBER') ?: '1') as int
+def keystorePath = System.getenv('KEYSTORE_PATH')
+
+android {
+    namespace 'io.github.jarvisassist'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'io.github.jarvisassist'
+        minSdk 34
+        targetSdk 35
+        versionCode buildNumber
+        versionName "0.1.${buildNumber}"
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePath) {
+                storeFile file(keystorePath)
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEY_ALIAS')
+                keyPassword System.getenv('KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (keystorePath) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

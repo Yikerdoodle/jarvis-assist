@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Jarvis Assist</string>
+    <string name="tile_label">Ask Jarvis</string>
+    <string name="settings_title">Jarvis settings</string>
+</resources>
