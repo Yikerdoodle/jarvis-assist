@@ -1,0 +1,50 @@
+name: Build
+
+# Every push runs the PC tests and the phone tests, and builds an APK you can download from the run page
+# (Artifacts at the bottom). The APK is signed with a throwaway debug key, so to install a newer build over an
+# older one, uninstall the older one first. No secrets are used.
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pc-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+      - name: Run the PC tests
+        working-directory: pc
+        run: python -m unittest discover -s tests -v
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Phone tests and debug build
+        working-directory: android
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: gradle testDebugUnitTest assembleDebug --no-daemon
+
+      - name: Keep the APK from this run
+        uses: actions/upload-artifact@v4
+        with:
+          name: StartClaude-0.1.${{ github.run_number }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14

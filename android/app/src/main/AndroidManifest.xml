@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Talk to the program on the PC over the tailnet. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Needed to find the home Wi-Fi when sending the wake-up signal. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <queries>
+        <!-- So the button can open the Claude app once the PC is ready. -->
+        <package android:name="com.anthropic.claude" />
+    </queries>
+
+    <!-- Cleartext is allowed only because the PC program speaks plain HTTP inside the encrypted tailnet.
+         BridgeClient refuses any http:// address that is not a tailnet or loopback address. -->
+    <application
+        android:allowBackup="false"
+        android:icon="@drawable/ic_pc_shortcut"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.DeviceDefault.DayNight"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Touch and hold the app icon: "Start Claude on my PC" (it can be dragged onto the home screen). -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
+        </activity>
+
+        <!-- The home-screen button. Not exported: only this app's own shortcuts open it. It takes no input, so
+             nothing outside can steer what it does. -->
+        <activity
+            android:name=".WakeActivity"
+            android:exported="false"
+            android:label="@string/shortcut_start_short"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault.DayNight" />
+    </application>
+</manifest>

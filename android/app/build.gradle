@@ -1,0 +1,30 @@
+plugins {
+    id 'com.android.application'
+}
+
+// The build robot passes this in. Local builds without it get version 0.1.1.
+def buildNumber = (System.getenv('BUILD_NUMBER') ?: '1') as int
+
+android {
+    namespace 'io.github.startclaude'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'io.github.startclaude'
+        minSdk 34
+        // Stays on 35 on purpose: Android 17 only asks for the local-network permission from apps that
+        // target 37 or higher. See WakeSender before raising this.
+        targetSdk 35
+        versionCode buildNumber
+        versionName "0.1.${buildNumber}"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}

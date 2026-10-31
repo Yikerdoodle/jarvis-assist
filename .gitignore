@@ -1,0 +1,13 @@
+.gradle/
+build/
+local.properties
+*.jks
+*.keystore
+*.apk
+.idea/
+*.iml
+__pycache__/
+*.pyc
+.venv/
+# The PC program's token, launcher.json and logs. The token is a secret.
+pc/data/
