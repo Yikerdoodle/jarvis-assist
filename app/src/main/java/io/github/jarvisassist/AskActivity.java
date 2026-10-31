@@ -49,6 +49,9 @@ public class AskActivity extends Activity {
     private Prefs prefs;
     private final BridgeClient bridge = new BridgeClient();
     private final NanoEngine onDevice = new NanoEngine();
+    private boolean bridgeUp;   // the PC answered its last health check
+    private int nanoState = -1; // 3 = Gemini Nano is on the phone and ready
+    private String routeNote = ""; // why Auto chose the engine, shown next to the answer
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService probe = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -297,18 +300,24 @@ public class AskActivity extends Activity {
     private void refreshStatus() {
         final String base = prefs.bridgeUrl();
         if (base.isEmpty() || prefs.token().isEmpty()) {
+            bridgeUp = false;
             setStatus("Not set up: open Settings and add the PC address and token.");
             return;
         }
         if (!BridgeClient.isAllowedBase(base)) {
+            bridgeUp = false;
             setStatus("The PC address must be https, or a Tailscale address.");
             return;
         }
         setStatus("Checking the PC...");
         probe.execute(() -> {
             final String problem = BridgeClient.health(base);
-            ui.post(() -> setStatus(problem == null ? "Claude is ready (via your PC)" : problem));
+            ui.post(() -> {
+                bridgeUp = problem == null;
+                setStatus(problem == null ? "Claude is ready (via your PC)" : problem);
+            });
         });
+        onDevice.checkStatus((text, state) -> ui.post(() -> nanoState = state));
     }
 
     private void newChat() {
@@ -334,39 +343,32 @@ public class AskActivity extends Activity {
         if (busy || text.isEmpty()) {
             return;
         }
-        final String engine = Router.pick(prefs.engine());
-        if (engine == null) {
-            setStatus("That engine is not set up yet. Choose Auto, Claude or On-device.");
-            return;
-        }
-        if (engine.equals("local")) {
-            askOnDevice(text); // needs no PC and no network
-            return;
-        }
-        final String base = prefs.bridgeUrl();
-        final String token = prefs.token();
-        if (base.isEmpty() || token.isEmpty()) {
-            setStatus("Not set up: open Settings and add the PC address and token.");
-            return;
-        }
-        if (!BridgeClient.isAllowedBase(base)) {
-            setStatus("The PC address must be https, or a Tailscale address.");
-            return;
-        }
-        final JSONObject body = new JSONObject();
-        try {
-            JSONArray past = new JSONArray();
-            for (JSONObject turn : history) {
-                past.put(turn);
+        final String selected = prefs.engine();
+        final String engine;
+        final String reason;
+        if (selected.equals("auto")) {
+            Router.Choice choice = Router.decideAuto(text, nanoState == 3, bridgeUp);
+            engine = choice.engine;
+            reason = choice.reason;
+        } else {
+            engine = Router.pick(selected);
+            reason = null;
+            if (engine == null) {
+                setStatus("That engine is not set up yet. Choose Auto, Claude or On-device.");
+                return;
             }
-            body.put("text", text);
-            body.put("engine", engine);
-            body.put("history", past);
-        } catch (JSONException e) {
-            setStatus("Could not build the request.");
-            return;
         }
+        prepareAsk(text);
+        final boolean auto = reason != null;
+        if (engine.equals("local")) {
+            runLocal(text, auto, auto ? "Auto: on-device (" + reason + ")" : null);
+        } else {
+            runClaude(text, auto, auto ? "Auto: Claude (" + reason + ")" : null);
+        }
+    }
 
+    /** The screen work every question needs: stop speech, clear the box, add the question to the transcript. */
+    private void prepareAsk(String text) {
         if (tts != null) {
             tts.stop();
         }
@@ -377,8 +379,59 @@ public class AskActivity extends Activity {
         pendingSpeech.setLength(0);
         busy = true;
         updateButtons();
-        setStatus("Thinking...");
         renderReply();
+    }
+
+    /**
+     * Shows an error under the question. In Auto mode the other engine gets one try first, so a missing PC or a
+     * Nano hiccup does not leave the owner without an answer.
+     */
+    private void failOrFallBack(String message, String text, boolean fromLocal, boolean canFallBack) {
+        boolean otherReady = fromLocal ? bridgeUp : nanoState == 3;
+        if (canFallBack && otherReady) {
+            reply.setLength(0);
+            pendingSpeech.setLength(0);
+            String note = "Auto: " + (fromLocal ? "the phone" : "Claude") + " could not answer (" + message + "), trying "
+                    + (fromLocal ? "Claude" : "the phone");
+            if (fromLocal) {
+                runClaude(text, false, note);
+            } else {
+                runLocal(text, false, note);
+            }
+            return;
+        }
+        transcriptBase = transcriptBase + "[" + message + "]";
+        transcript.setText(transcriptBase);
+        finishAsk(message);
+    }
+
+    /** Answers with Claude through the PC bridge. */
+    private void runClaude(final String text, final boolean canFallBack, String statusNote) {
+        routeNote = statusNote == null ? "" : statusNote;
+        final String base = prefs.bridgeUrl();
+        final String token = prefs.token();
+        if (base.isEmpty() || token.isEmpty()) {
+            failOrFallBack("Not set up: open Settings and add the PC address and token.", text, false, canFallBack);
+            return;
+        }
+        if (!BridgeClient.isAllowedBase(base)) {
+            failOrFallBack("The PC address must be https, or a Tailscale address.", text, false, canFallBack);
+            return;
+        }
+        final JSONObject body = new JSONObject();
+        try {
+            JSONArray past = new JSONArray();
+            for (JSONObject turn : history) {
+                past.put(turn);
+            }
+            body.put("text", text);
+            body.put("engine", "claude");
+            body.put("history", past);
+        } catch (JSONException e) {
+            failOrFallBack("Could not build the request.", text, false, canFallBack);
+            return;
+        }
+        setStatus(statusNote != null ? statusNote : "Thinking...");
 
         worker.execute(() -> bridge.ask(base, token, body, new BridgeClient.Listener() {
             @Override
@@ -409,33 +462,19 @@ public class AskActivity extends Activity {
 
             @Override
             public void onError(String message) {
-                ui.post(() -> {
-                    transcriptBase = transcriptBase + "[" + message + "]";
-                    transcript.setText(transcriptBase);
-                    finishAsk(message);
-                });
+                ui.post(() -> failOrFallBack(message, text, false, canFallBack));
             }
         }));
     }
 
     /** Answers with Gemini Nano on the phone. Shows how long it took, so the engines can be compared. */
-    private void askOnDevice(final String text) {
+    private void runLocal(final String text, final boolean canFallBack, String statusNote) {
+        routeNote = statusNote == null ? "" : statusNote;
         final List<String> past = new ArrayList<>();
         for (JSONObject turn : history) {
             past.add((turn.optString("role").equals("user") ? "Owner: " : "Jarvis: ") + turn.optString("text"));
         }
-        if (tts != null) {
-            tts.stop();
-        }
-        stopListening();
-        input.setText("");
-        transcriptBase = transcript.getText() + (transcript.length() == 0 ? "" : "\n\n") + "You: " + text + "\n\n";
-        reply.setLength(0);
-        pendingSpeech.setLength(0);
-        busy = true;
-        updateButtons();
-        setStatus("Asking Gemini Nano on the phone...");
-        renderReply();
+        setStatus(statusNote != null ? statusNote : "Asking Gemini Nano on the phone...");
 
         onDevice.ask(past, text, new NanoEngine.Listener() {
             @Override
@@ -470,11 +509,7 @@ public class AskActivity extends Activity {
 
             @Override
             public void onError(String message) {
-                ui.post(() -> {
-                    transcriptBase = transcriptBase + "[" + message + "]";
-                    transcript.setText(transcriptBase);
-                    finishAsk(message);
-                });
+                ui.post(() -> failOrFallBack(message, text, true, canFallBack));
             }
         });
     }
@@ -482,7 +517,7 @@ public class AskActivity extends Activity {
     private void finishAsk(String statusText) {
         busy = false;
         updateButtons();
-        setStatus(statusText);
+        setStatus(routeNote.isEmpty() || statusText.startsWith("Stopped") ? statusText : routeNote + " | " + statusText);
     }
 
     private void remember(String userText, String answer) {

@@ -5,9 +5,13 @@ import com.google.mlkit.genai.common.DownloadStatus
 import com.google.mlkit.genai.common.FeatureStatus
 import com.google.mlkit.genai.prompt.Generation
 import com.google.mlkit.genai.prompt.GenerativeModel
+import com.google.mlkit.genai.prompt.ModelPreference
+import com.google.mlkit.genai.prompt.ModelReleaseStage
 import com.google.mlkit.genai.prompt.SystemInstruction
 import com.google.mlkit.genai.prompt.TextPart
 import com.google.mlkit.genai.prompt.generateContentRequest
+import com.google.mlkit.genai.prompt.generationConfig
+import com.google.mlkit.genai.prompt.modelConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -34,6 +38,10 @@ class NanoEngine {
     interface StatusListener {
         /** [state]: 3 = ready, 2 = downloading, 1 = needs a download, 0 = unavailable, -1 = could not check. */
         fun onStatus(text: String, state: Int)
+    }
+
+    interface ProbeListener {
+        fun onProbe(lines: List<String>)
     }
 
     interface DownloadListener {
@@ -68,6 +76,46 @@ class NanoEngine {
             } catch (e: Exception) {
                 listener.onStatus(explain(e), -1)
             }
+        }
+    }
+
+    /**
+     * Reports which Gemini Nano this phone has and whether the newer preview model (Gemini Nano 4, which Google
+     * says is required for tool calling) is available. Changes nothing and downloads nothing.
+     */
+    fun probeCapabilities(listener: ProbeListener) {
+        scope.launch {
+            val lines = mutableListOf<String>()
+            try {
+                val m = model ?: Generation.getClient().also { model = it }
+                lines += "Standard model: " + try { m.getBaseModelName() } catch (e: Exception) { "unknown (${e.message})" }
+                lines += "Input limit: " + try { m.getTokenLimit().toString() } catch (e: Exception) { "unknown" } + " tokens"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lines += "Standard model: could not read (${e.message})"
+            }
+            try {
+                val preview = Generation.getClient(generationConfig {
+                    modelConfig = modelConfig {
+                        releaseStage = ModelReleaseStage.PREVIEW
+                        preference = ModelPreference.FAST
+                    }
+                })
+                val status = preview.checkStatus()
+                lines += "Gemini Nano 4 preview (needed for tool calling): " + when (status) {
+                    FeatureStatus.AVAILABLE -> "available"
+                    FeatureStatus.DOWNLOADABLE -> "downloadable"
+                    FeatureStatus.DOWNLOADING -> "downloading"
+                    else -> "not available on this phone"
+                }
+                try { preview.close() } catch (ignored: Exception) { }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lines += "Gemini Nano 4 preview (needed for tool calling): not available (${e.message})"
+            }
+            listener.onProbe(lines)
         }
     }
 
@@ -195,6 +243,9 @@ class NanoEngine {
         const val MAX_CHARS = 6000 // Nano's input limit is about 4000 tokens
         const val SYSTEM_PROMPT = "You are Jarvis, the owner's phone assistant. Your reply is read aloud, so use short, " +
             "natural spoken sentences with no markdown, lists or emoji. Use SI units, 24-hour time and British " +
-            "spelling. Say plainly when you do not know. Never invent facts."
+            "spelling. You cannot control the phone or the internet: you cannot set timers or alarms, send messages, " +
+            "make calls, open apps, change settings or look things up. If asked to do any of those, say plainly that " +
+            "you cannot do that yet, and never say or imply that you did it. Follow format requests exactly. Say " +
+            "plainly when you do not know. Never invent facts."
     }
 }

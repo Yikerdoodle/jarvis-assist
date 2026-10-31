@@ -106,6 +106,13 @@ public class SettingsActivity extends Activity {
         nanoCheck.setText("Check again");
         nanoCheck.setOnClickListener(v -> checkNano());
         root.addView(nanoCheck);
+        Button nanoProbe = new Button(this);
+        nanoProbe.setText("Check what Gemini Nano can do (tool calling)");
+        nanoProbe.setOnClickListener(v -> {
+            nanoStatus.setText("Asking the phone...");
+            nano.probeCapabilities(lines -> ui.post(() -> nanoStatus.setText(android.text.TextUtils.join("\n", lines))));
+        });
+        root.addView(nanoProbe);
 
         root.addView(label("\nSpoken replies"));
         voiceStatus = label("Loading voices...");
