@@ -23,6 +23,33 @@ final class Prefs {
         sp.edit().putString("bridge_url", url.trim()).putString("token", token.trim()).apply();
     }
 
+    /** The chosen text-to-speech voice, or "" to pick the best one automatically. */
+    String ttsVoice() {
+        return sp.getString("tts_voice", "");
+    }
+
+    void setTtsVoice(String name) {
+        sp.edit().putString("tts_voice", name).apply();
+    }
+
+    /** Speech speed, 1.0 = normal. */
+    float ttsRate() {
+        return sp.getFloat("tts_rate", 1.0f);
+    }
+
+    void setTtsRate(float rate) {
+        sp.edit().putFloat("tts_rate", rate).apply();
+    }
+
+    /** Online voices sound more natural but send the text of each reply to Google, so they are off by default. */
+    boolean ttsOnlineVoices() {
+        return sp.getBoolean("tts_online", false);
+    }
+
+    void setTtsOnlineVoices(boolean allowed) {
+        sp.edit().putBoolean("tts_online", allowed).apply();
+    }
+
     boolean speak() {
         return sp.getBoolean("speak", true);
     }

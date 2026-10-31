@@ -80,7 +80,12 @@ public class AskActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = new Prefs(this);
         buildUi();
-        tts = new TextToSpeech(this, code -> ttsReady = code == TextToSpeech.SUCCESS);
+        tts = new TextToSpeech(this, code -> {
+            ttsReady = code == TextToSpeech.SUCCESS;
+            if (ttsReady) {
+                Voices.apply(tts, prefs); // best available voice (or the one chosen in Settings), at the chosen speed
+            }
+        });
         if (savedInstanceState == null && getIntent().getBooleanExtra("voice", false)) {
             ui.postDelayed(this::startListening, 350);
         }

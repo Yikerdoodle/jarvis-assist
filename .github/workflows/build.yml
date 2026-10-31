@@ -35,6 +35,9 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
+      - name: Unit tests
+        run: gradle testDebugUnitTest --no-daemon
+
       - name: Restore signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
