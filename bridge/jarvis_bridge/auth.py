@@ -13,8 +13,14 @@ LOOPBACK = ("127.0.0.1", "::1")
 
 
 def app_dir():
-    base = os.environ.get("LOCALAPPDATA") or str(pathlib.Path.home())
-    path = pathlib.Path(base) / "jarvis-assist"
+    """Where the token, log and Claude's working folder live.
+
+    Defaults to a `data` folder next to the bridge code (ignored by git). It is deliberately not under
+    %LOCALAPPDATA%: Windows redirects that for packaged apps such as the Claude desktop app, so a helper
+    running inside one would see different files from the bridge itself.
+    """
+    override = os.environ.get("JARVIS_BRIDGE_DATA")
+    path = pathlib.Path(override) if override else pathlib.Path(__file__).resolve().parents[1] / "data"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
