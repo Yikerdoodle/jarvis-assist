@@ -49,6 +49,14 @@
             android:label="@string/settings_title"
             android:theme="@android:style/Theme.DeviceDefault.DayNight" />
 
+        <!-- Started from a computer with: adb shell am start -n io.github.jarvisassist/.ProvisionActivity
+             -e bridge_url http://100.x.y.z:8787 -e token TOKEN . Nothing is saved until the owner taps Save. -->
+        <activity
+            android:name=".ProvisionActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service
             android:name=".AskTileService"
             android:exported="true"
