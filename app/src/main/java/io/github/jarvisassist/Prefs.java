@@ -23,6 +23,24 @@ final class Prefs {
         sp.edit().putString("bridge_url", url.trim()).putString("token", token.trim()).apply();
     }
 
+    /** The language whose voice is used, as a language tag. US English by default. */
+    String ttsLanguage() {
+        return sp.getString("tts_language", "en-US");
+    }
+
+    void setTtsLanguage(String tag) {
+        sp.edit().putString("tts_language", tag).apply();
+    }
+
+    /** The text-to-speech engine's package name, or "" for the phone's default engine. */
+    String ttsEngine() {
+        return sp.getString("tts_engine", "");
+    }
+
+    void setTtsEngine(String packageName) {
+        sp.edit().putString("tts_engine", packageName).apply();
+    }
+
     /** The chosen text-to-speech voice, or "" to pick the best one automatically. */
     String ttsVoice() {
         return sp.getString("tts_voice", "");

@@ -80,15 +80,27 @@ public class AskActivity extends Activity {
         super.onCreate(savedInstanceState);
         prefs = new Prefs(this);
         buildUi();
-        tts = new TextToSpeech(this, code -> {
-            ttsReady = code == TextToSpeech.SUCCESS;
-            if (ttsReady) {
-                Voices.apply(tts, prefs); // best available voice (or the one chosen in Settings), at the chosen speed
-            }
-        });
+        startTts();
         if (savedInstanceState == null && getIntent().getBooleanExtra("voice", false)) {
             ui.postDelayed(this::startListening, 350);
         }
+    }
+
+    /** Starts the speech engine chosen in Settings (or the phone's default) with the chosen voice and speed. */
+    private void startTts() {
+        String engine = prefs.ttsEngine();
+        tts = new TextToSpeech(this, code -> {
+            ttsReady = code == TextToSpeech.SUCCESS;
+            if (!ttsReady && !prefs.ttsEngine().isEmpty()) {
+                prefs.setTtsEngine(""); // the chosen engine is gone: fall back to the phone's default
+                tts.shutdown();
+                startTts();
+                return;
+            }
+            if (ttsReady) {
+                Voices.apply(tts, prefs);
+            }
+        }, engine.isEmpty() ? null : engine);
     }
 
     @Override

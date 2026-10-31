@@ -29,7 +29,7 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Where the PC address and the token are entered, plus a shortcut to the system assistant picker. */
+/** The PC address and token, the spoken-reply voice, and a shortcut to the system assistant picker. */
 public class SettingsActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService probe = Executors.newSingleThreadExecutor();
@@ -40,10 +40,17 @@ public class SettingsActivity extends Activity {
 
     private TextToSpeech tts;
     private boolean ttsReady;
-    private Spinner voiceSpinner;
     private TextView voiceStatus;
+    private Spinner engineSpinner;
+    private Spinner languageSpinner;
+    private Spinner voiceSpinner;
+    private final List<TextToSpeech.EngineInfo> listedEngines = new ArrayList<>();
+    private final List<String> listedLanguages = new ArrayList<>();
     private final List<Voice> listedVoices = new ArrayList<>();
-    private boolean spinnerArmed;
+    // Filling a spinner makes it report a "selection" that the owner did not make; each spinner skips that first one.
+    private boolean engineArmed;
+    private boolean languageArmed;
+    private boolean voiceArmed;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -82,9 +89,19 @@ public class SettingsActivity extends Activity {
         result = label("");
         root.addView(result);
 
-        root.addView(label("\nVoice for spoken replies"));
+        root.addView(label("\nSpoken replies"));
         voiceStatus = label("Loading voices...");
         root.addView(voiceStatus);
+
+        root.addView(label("Speech engine"));
+        engineSpinner = new Spinner(this);
+        root.addView(engineSpinner);
+
+        root.addView(label("Language"));
+        languageSpinner = new Spinner(this);
+        root.addView(languageSpinner);
+
+        root.addView(label("Voice (\"Automatic\" uses the voice you picked in the engine's own settings)"));
         voiceSpinner = new Spinner(this);
         root.addView(voiceSpinner);
 
@@ -130,19 +147,9 @@ public class SettingsActivity extends Activity {
         root.addView(hear);
 
         Button moreVoices = new Button(this);
-        moreVoices.setText("Get more natural voices");
+        moreVoices.setText("Get more voices (opens the engine's settings)");
         moreVoices.setOnClickListener(v -> openVoiceSettings());
         root.addView(moreVoices);
-
-        tts = new TextToSpeech(this, code -> {
-            ttsReady = code == TextToSpeech.SUCCESS;
-            if (ttsReady) {
-                Voices.apply(tts, prefs);
-                refreshVoiceList();
-            } else {
-                voiceStatus.setText("No speech engine is available.");
-            }
-        });
 
         root.addView(label("\nDefault assistant (optional). Choosing this app there makes the power-button "
                 + "hold open Jarvis instead of Gemini. You can switch back at any time."));
@@ -152,6 +159,7 @@ public class SettingsActivity extends Activity {
         root.addView(assistant);
 
         setContentView(scroll);
+        startTts();
     }
 
     @Override
@@ -164,11 +172,97 @@ public class SettingsActivity extends Activity {
         super.onDestroy();
     }
 
+    // ---------- Speech ----------
+
+    private void startTts() {
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+        }
+        ttsReady = false;
+        String engine = prefs.ttsEngine();
+        tts = new TextToSpeech(this, code -> {
+            ttsReady = code == TextToSpeech.SUCCESS;
+            if (!ttsReady && !prefs.ttsEngine().isEmpty()) {
+                prefs.setTtsEngine(""); // the chosen engine is gone: go back to the phone's default
+                startTts();
+                return;
+            }
+            if (!ttsReady) {
+                voiceStatus.setText("No speech engine is available.");
+                return;
+            }
+            Voices.apply(tts, prefs);
+            refreshEngineList();
+            refreshLanguageList();
+            refreshVoiceList();
+        }, engine.isEmpty() ? null : engine);
+    }
+
+    private void refreshEngineList() {
+        listedEngines.clear();
+        listedEngines.addAll(tts.getEngines());
+        List<String> labels = new ArrayList<>();
+        labels.add("Phone default");
+        int selected = 0;
+        for (int i = 0; i < listedEngines.size(); i++) {
+            labels.add(listedEngines.get(i).label);
+            if (listedEngines.get(i).name.equals(prefs.ttsEngine())) {
+                selected = i + 1;
+            }
+        }
+        engineSpinner.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
+        engineArmed = false;
+        engineSpinner.setSelection(selected);
+        engineSpinner.setOnItemSelectedListener(new SimpleSelection() {
+            @Override
+            void chosen(int position) {
+                if (!engineArmed) {
+                    engineArmed = true;
+                    return;
+                }
+                prefs.setTtsEngine(position == 0 ? "" : listedEngines.get(position - 1).name);
+                prefs.setTtsVoice(""); // voice names belong to one engine
+                startTts();
+            }
+        });
+    }
+
+    private void refreshLanguageList() {
+        listedLanguages.clear();
+        listedLanguages.addAll(Voices.englishTags(tts));
+        List<String> labels = new ArrayList<>();
+        int selected = 0;
+        for (int i = 0; i < listedLanguages.size(); i++) {
+            labels.add(Voices.languageLabel(listedLanguages.get(i)));
+            if (listedLanguages.get(i).equals(prefs.ttsLanguage())) {
+                selected = i;
+            }
+        }
+        languageSpinner.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
+        languageArmed = false;
+        languageSpinner.setSelection(selected);
+        languageSpinner.setOnItemSelectedListener(new SimpleSelection() {
+            @Override
+            void chosen(int position) {
+                if (!languageArmed) {
+                    languageArmed = true;
+                    return;
+                }
+                prefs.setTtsLanguage(listedLanguages.get(position));
+                prefs.setTtsVoice("");
+                Voices.apply(tts, prefs);
+                refreshVoiceList();
+                sample();
+            }
+        });
+    }
+
     private void refreshVoiceList() {
         listedVoices.clear();
-        listedVoices.addAll(Voices.ranked(tts, prefs.ttsOnlineVoices()));
+        listedVoices.addAll(Voices.ranked(tts, prefs.ttsOnlineVoices(), prefs.ttsLanguage()));
         List<String> labels = new ArrayList<>();
-        labels.add("Automatic (best available)");
+        labels.add("Automatic");
         int selected = 0;
         String wanted = prefs.ttsVoice();
         for (int i = 0; i < listedVoices.size(); i++) {
@@ -178,28 +272,27 @@ public class SettingsActivity extends Activity {
             }
         }
         voiceSpinner.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, labels));
-        spinnerArmed = false; // the first callback comes from setSelection below, not from the owner
+        voiceArmed = false;
         voiceSpinner.setSelection(selected);
-        voiceSpinner.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+        voiceSpinner.setOnItemSelectedListener(new SimpleSelection() {
             @Override
-            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
-                if (!spinnerArmed) {
-                    spinnerArmed = true;
+            void chosen(int position) {
+                if (!voiceArmed) {
+                    voiceArmed = true;
                     return;
                 }
                 prefs.setTtsVoice(position == 0 ? "" : listedVoices.get(position - 1).getName());
                 Voices.apply(tts, prefs);
+                showCurrentVoice();
                 sample();
             }
-
-            @Override
-            public void onNothingSelected(AdapterView<?> parent) {
-            }
         });
+        showCurrentVoice();
+    }
+
+    private void showCurrentVoice() {
         Voice current = tts.getVoice();
-        voiceStatus.setText(listedVoices.isEmpty()
-                ? "No English voices found. Try \"Get more natural voices\"."
-                : listedVoices.size() + " English voices. In use: " + (current == null ? "unknown" : Voices.label(current)));
+        voiceStatus.setText(current == null ? "In use: unknown" : "In use: " + Voices.label(current));
     }
 
     private void sample() {
@@ -220,6 +313,22 @@ public class SettingsActivity extends Activity {
             }
         }
     }
+
+    /** A spinner listener that only needs to know which position was picked. */
+    private abstract static class SimpleSelection implements AdapterView.OnItemSelectedListener {
+        abstract void chosen(int position);
+
+        @Override
+        public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+            chosen(position);
+        }
+
+        @Override
+        public void onNothingSelected(AdapterView<?> parent) {
+        }
+    }
+
+    // ---------- Layout and connection ----------
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
