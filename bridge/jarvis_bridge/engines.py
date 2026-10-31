@@ -26,12 +26,19 @@ def find_claude():
     found = shutil.which("claude")
     if found:
         return found
+    candidates = []
     roaming = os.environ.get("APPDATA")
     if roaming:
-        candidates = glob.glob(os.path.join(roaming, "Claude", "claude-code", "*", "*", "claude.exe"))
-        if candidates:
-            # newest version directory, e.g. ...\claude-code\2.1.309\<hash>\claude.exe
-            return max(candidates, key=lambda p: _version_key_dir(p))
+        candidates += glob.glob(os.path.join(roaming, "Claude", "claude-code", "*", "*", "claude.exe"))
+    # The Claude desktop app is a packaged app: Windows keeps its "Roaming" files in a private folder that a
+    # program running outside the app (like this bridge) only sees by this real path.
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates += glob.glob(os.path.join(local, "Packages", "Claude_*", "LocalCache", "Roaming", "Claude",
+                                             "claude-code", "*", "*", "claude.exe"))
+    if candidates:
+        # newest version directory, e.g. ...\claude-code\2.1.309\<hash>\claude.exe
+        return max(candidates, key=lambda p: _version_key_dir(p))
     return None
 
 
