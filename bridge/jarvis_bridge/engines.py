@@ -16,6 +16,14 @@ ALLOWED_CLAUDE_MODELS = {"haiku", "sonnet", "opus", "fable"}
 # Never let a stray key make the CLI bill the API instead of using the subscription login.
 STRIPPED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
                 "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+# A bridge started from inside a Claude session would inherit that session's settings (its host login, proxy
+# address and so on). The `claude` command must use only the owner's own subscription login.
+STRIPPED_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_", "CLAUDE_AGENT_", "CLAUDECODE")
+
+
+def clean_env(environ):
+    return {k: v for k, v in environ.items()
+            if k not in STRIPPED_ENV and not k.upper().startswith(STRIPPED_PREFIXES)}
 TIMEOUT_SECONDS = 180
 
 
@@ -113,7 +121,7 @@ class ClaudeCliEngine:
         if not argv:
             yield {"type": "error", "message": "The claude command was not found on the PC."}
             return
-        env = {k: v for k, v in os.environ.items() if k not in STRIPPED_ENV}
+        env = clean_env(os.environ)
         cwd = app_dir() / "claude-cwd"
         cwd.mkdir(parents=True, exist_ok=True)
         prompt = build_prompt(req["text"], req.get("history"), req.get("context"))

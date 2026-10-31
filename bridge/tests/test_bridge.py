@@ -35,6 +35,16 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(parse_claude_line(line), [{"type": "error", "message": "boom"}])
 
 
+class EnvTests(unittest.TestCase):
+    def test_claude_and_api_settings_are_removed_but_normal_variables_stay(self):
+        from jarvis_bridge.engines import clean_env
+        env = {"ANTHROPIC_API_KEY": "x", "ANTHROPIC_BASE_URL": "u", "CLAUDE_CODE_ENTRYPOINT": "e",
+               "CLAUDE_AGENT_SDK_VERSION": "v", "CLAUDECODE": "1", "claude_code_session_id": "s",
+               "PATH": "p", "USERPROFILE": "h", "CLAUDE_CONFIG_DIR_NOT_A_THING": "keep-me?"}
+        cleaned = clean_env(env)
+        self.assertEqual(cleaned, {"PATH": "p", "USERPROFILE": "h", "CLAUDE_CONFIG_DIR_NOT_A_THING": "keep-me?"})
+
+
 class AuthTests(unittest.TestCase):
     def test_token(self):
         self.assertTrue(token_ok("Bearer abc", "abc"))
