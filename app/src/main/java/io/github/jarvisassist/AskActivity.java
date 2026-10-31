@@ -82,8 +82,35 @@ public class AskActivity extends Activity {
         prefs = new Prefs(this);
         buildUi();
         startTts();
-        if (savedInstanceState == null && getIntent().getBooleanExtra("voice", false)) {
-            ui.postDelayed(this::startListening, 350);
+        if (savedInstanceState == null) {
+            applyIntentExtras(getIntent());
+            if (getIntent().getBooleanExtra("voice", false)) {
+                ui.postDelayed(this::startListening, 350);
+            }
+        }
+    }
+
+    /**
+     * Text shared to Jarvis (Share > Jarvis Assist), or the "prefill" and "engine" extras, put text in the box and
+     * pick an engine. It never sends anything by itself: the owner always taps Send.
+     */
+    private void applyIntentExtras(Intent intent) {
+        String engineName = intent.getStringExtra("engine");
+        if (engineName != null) {
+            for (int i = 0; i < engineGroup.getChildCount(); i++) {
+                RadioButton button = (RadioButton) engineGroup.getChildAt(i);
+                if (engineName.equals(button.getTag()) && button.isEnabled()) {
+                    button.setChecked(true);
+                }
+            }
+        }
+        String text = intent.getStringExtra("prefill");
+        if (text == null && Intent.ACTION_SEND.equals(intent.getAction())) {
+            text = intent.getStringExtra(Intent.EXTRA_TEXT);
+        }
+        if (text != null) {
+            input.setText(text);
+            input.setSelection(input.length());
         }
     }
 
@@ -108,6 +135,7 @@ public class AskActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        applyIntentExtras(intent);
         if (intent.getBooleanExtra("voice", false)) {
             startListening();
         }
