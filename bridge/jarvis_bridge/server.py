@@ -1,4 +1,5 @@
-"""HTTP bridge: GET /v1/health, POST /v1/ask (streams newline-delimited JSON), POST /v1/adb/pair."""
+"""HTTP bridge: GET /v1/health, POST /v1/ask (streams newline-delimited JSON), POST /v1/adb/pair,
+POST /v1/remote/start (start Claude Remote Control on this PC), GET /v1/wake-info (this PC's network cards)."""
 
 import json
 import logging
@@ -11,14 +12,16 @@ from . import __version__
 from .adbpair import AdbPairer, validate_request
 from .auth import TailnetPeerCheck, load_or_create_token, token_ok
 from .engines import default_engines
+from .launcher import LaunchError, RemoteLauncher, local_macs
 
 LOG = logging.getLogger("jarvis_bridge")
 MAX_BODY = 256 * 1024
 MAX_TEXT = 8000
 
 
-def make_handler(engines, peer_check, token, pairer=None):
+def make_handler(engines, peer_check, token, pairer=None, launcher=None):
     pairer = pairer or AdbPairer()
+    launcher = launcher or RemoteLauncher()
 
     class Handler(BaseHTTPRequestHandler):
         server_version = f"JarvisBridge/{__version__}"
@@ -42,16 +45,34 @@ def make_handler(engines, peer_check, token, pairer=None):
                 self._send_json(403, {"error": "device not allowed"})
             return allowed
 
-        def do_GET(self):
-            if self.path != "/v1/health":
-                return self._send_json(404, {"error": "not found"})
+        def _authorised(self):
+            """Same checks as /v1/ask: a device of the owner's tailnet, and the app token."""
             if not self._peer_ok():
-                return
-            self._send_json(200, {
-                "ok": True, "version": __version__,
-                "engines": {name: engine.status() for name, engine in engines.items()},
-                "adb": pairer.status(),
-            })
+                return False
+            if not token_ok(self.headers.get("Authorization"), token):
+                self._send_json(401, {"error": "bad token"})
+                return False
+            return True
+
+        def do_GET(self):
+            if self.path == "/v1/health":
+                if not self._peer_ok():
+                    return
+                return self._send_json(200, {
+                    "ok": True, "version": __version__,
+                    "engines": {name: engine.status() for name, engine in engines.items()},
+                    "adb": pairer.status(),
+                    "remote": launcher.status(),
+                })
+            if self.path == "/v1/wake-info":
+                if not self._authorised():
+                    return
+                try:
+                    return self._send_json(200, {"macs": local_macs()})
+                except Exception as exc:  # getmac missing or slow: the phone can still be filled in by hand
+                    LOG.warning("wake-info failed: %s", exc)
+                    return self._send_json(200, {"macs": []})
+            return self._send_json(404, {"error": "not found"})
 
         def do_POST(self):
             # Read the body before any early reply: closing with unread data makes Windows reset the
@@ -63,6 +84,8 @@ def make_handler(engines, peer_check, token, pairer=None):
             raw = self.rfile.read(length) if 0 < length <= MAX_BODY else b""
             if self.path == "/v1/adb/pair":
                 return self._adb_pair(raw)
+            if self.path == "/v1/remote/start":
+                return self._remote_start()
             if self.path != "/v1/ask":
                 return self._send_json(404, {"error": "not found"})
             if not self._peer_ok():
@@ -84,6 +107,20 @@ def make_handler(engines, peer_check, token, pairer=None):
             if engine is None:
                 return self._send_json(400, {"error": f"unknown engine {name}"})
             self._stream(engine, req)
+
+        def _remote_start(self):
+            """Start `claude remote-control` on this PC. The request carries nothing: what runs, and in which
+            folder, comes from launcher.json on the PC (see launcher.py)."""
+            if not self._authorised():
+                return
+            started = time.monotonic()
+            try:
+                result = launcher.start()
+            except LaunchError as exc:
+                LOG.info("remote start refused status=%s seconds=%.1f", exc.status, time.monotonic() - started)
+                return self._send_json(exc.status, {"error": str(exc)})
+            LOG.info("remote start state=%s seconds=%.1f", result["state"], time.monotonic() - started)
+            self._send_json(200, {"ok": True, **result})
 
         def _adb_pair(self, raw):
             """The phone hands over a Wireless-debugging pairing code; the PC runs `adb pair` itself.
@@ -140,8 +177,8 @@ def make_handler(engines, peer_check, token, pairer=None):
     return Handler
 
 
-def serve(address, port, engines, peer_check, token, pairer=None):
-    server = ThreadingHTTPServer((address, port), make_handler(engines, peer_check, token, pairer))
+def serve(address, port, engines, peer_check, token, pairer=None, launcher=None):
+    server = ThreadingHTTPServer((address, port), make_handler(engines, peer_check, token, pairer, launcher))
     server.daemon_threads = True
     threading.Thread(target=server.serve_forever, daemon=True).start()
     LOG.info("listening on %s:%s", address, port)
@@ -164,6 +201,7 @@ def main():
     token = load_or_create_token()
     engines = default_engines()
     pairer = AdbPairer()  # one shared instance, so the rate limit covers every listening address
+    launcher = RemoteLauncher()  # shared too: the loopback and Tailscale listeners must not each start a copy
     servers = {}
     while True:  # Tailscale may come up after us, so keep trying to bind its address
         wanted = ["127.0.0.1"]
@@ -173,7 +211,7 @@ def main():
         for address in wanted:
             if address not in servers:
                 try:
-                    servers[address] = serve(address, port, engines, peer_check, token, pairer)
+                    servers[address] = serve(address, port, engines, peer_check, token, pairer, launcher)
                 except OSError as exc:
                     LOG.warning("cannot bind %s:%s (%s)", address, port, exc)
         time.sleep(30)

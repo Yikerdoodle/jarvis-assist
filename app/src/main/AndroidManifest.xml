@@ -14,6 +14,8 @@
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
         </intent>
+        <!-- So the "Start Claude" button can open the Claude app once the PC is ready. -->
+        <package android:name="com.anthropic.claude" />
     </queries>
 
     <!-- Cleartext is allowed only because the bridge speaks plain HTTP inside the encrypted tailnet.
@@ -46,7 +48,20 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
             </intent-filter>
+            <!-- Touch and hold the app icon: "Start Claude on my PC" (it can be dragged onto the home screen). -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
+
+        <!-- The home-screen button. Not exported: only this app's own shortcuts open it. It takes no input, so
+             nothing outside can steer what it does. -->
+        <activity
+            android:name=".WakeActivity"
+            android:exported="false"
+            android:label="@string/shortcut_start_short"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault.DayNight" />
 
         <!-- Exported so the system Settings app can open it from the assistant picker. -->
         <activity

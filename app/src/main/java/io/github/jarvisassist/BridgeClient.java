@@ -1,5 +1,6 @@
 package io.github.jarvisassist;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -90,6 +91,71 @@ final class BridgeClient {
             return null;
         } catch (IOException | JSONException e) {
             return "PC unreachable (is Tailscale on?)";
+        } finally {
+            if (c != null) {
+                c.disconnect();
+            }
+        }
+    }
+
+    /** The HTTP status of the bridge's health check, or -1 if the PC cannot be reached. Quick, so it can be polled. */
+    static int ping(String base) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(trim(base) + "/v1/health").openConnection();
+            c.setConnectTimeout(3000);
+            c.setReadTimeout(3000);
+            return c.getResponseCode();
+        } catch (IOException e) {
+            return -1;
+        } finally {
+            if (c != null) {
+                c.disconnect();
+            }
+        }
+    }
+
+    /** Asks the bridge to start Claude's Remote Control on the PC. Never throws. */
+    static PcStarter.Reply startRemote(String base, String token) {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(trim(base) + "/v1/remote/start").openConnection();
+            c.setRequestMethod("POST");
+            c.setDoOutput(true);
+            c.setConnectTimeout(5000);
+            c.setReadTimeout(40000); // the PC checks what is running and waits a few seconds to see Claude stay up
+            c.setRequestProperty("Authorization", "Bearer " + token);
+            c.setFixedLengthStreamingMode(0);
+            c.getOutputStream().close();
+            int code = c.getResponseCode();
+            if (code == 200) {
+                return PcStarter.Reply.success(new JSONObject(readAll(c.getInputStream())).optString("state", "started"));
+            }
+            return PcStarter.Reply.failure(describe(code, c), false);
+        } catch (IOException | JSONException e) {
+            return PcStarter.Reply.failure("Lost the connection to the PC.", true);
+        } finally {
+            if (c != null) {
+                c.disconnect();
+            }
+        }
+    }
+
+    /** The PC's network cards, as {name, adapter, mac} objects with the likeliest wired one first. */
+    static JSONArray wakeInfo(String base, String token) throws IOException {
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(trim(base) + "/v1/wake-info").openConnection();
+            c.setConnectTimeout(4000);
+            c.setReadTimeout(15000);
+            c.setRequestProperty("Authorization", "Bearer " + token);
+            int code = c.getResponseCode();
+            if (code != 200) {
+                throw new IOException(describe(code, c));
+            }
+            return new JSONObject(readAll(c.getInputStream())).getJSONArray("macs");
+        } catch (JSONException e) {
+            throw new IOException("The PC sent something unexpected. Is the bridge up to date?");
         } finally {
             if (c != null) {
                 c.disconnect();

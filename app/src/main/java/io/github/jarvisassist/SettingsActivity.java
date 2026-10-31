@@ -3,7 +3,10 @@ package io.github.jarvisassist;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.pm.ShortcutInfo;
+import android.content.pm.ShortcutManager;
 import android.graphics.Insets;
+import android.graphics.drawable.Icon;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
 import android.os.Bundle;
@@ -27,6 +30,11 @@ import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -41,6 +49,8 @@ public class SettingsActivity extends Activity {
     private EditText url;
     private EditText token;
     private TextView result;
+    private EditText mac;
+    private TextView pcResult;
     private final NanoEngine nano = new NanoEngine();
     private TextView nanoStatus;
 
@@ -94,6 +104,45 @@ public class SettingsActivity extends Activity {
 
         result = label("");
         root.addView(result);
+
+        root.addView(label("\nStart Claude on your PC (a button for your home screen)"));
+        root.addView(label("The PC's network address (MAC), so the button can wake it when it is asleep. Optional, "
+                + "and it only works on your home Wi-Fi. It looks like AA:BB:CC:DD:EE:FF."));
+        mac = new EditText(this);
+        mac.setSingleLine(true);
+        mac.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        mac.setText(prefs.pcMac());
+        root.addView(mac);
+
+        Button fetchMac = new Button(this);
+        fetchMac.setText("Get it from the PC");
+        fetchMac.setOnClickListener(v -> fetchMac());
+        root.addView(fetchMac);
+
+        CheckBox openClaude = new CheckBox(this);
+        openClaude.setText("Open the Claude app when the PC is ready");
+        openClaude.setChecked(prefs.openClaudeWhenReady());
+        openClaude.setOnCheckedChangeListener((box, checked) -> prefs.setOpenClaudeWhenReady(checked));
+        root.addView(openClaude);
+
+        Button startNow = new Button(this);
+        startNow.setText("Start Claude on the PC now");
+        startNow.setOnClickListener(v -> {
+            if (saveMac()) {
+                prefs.saveBridge(url.getText().toString(), token.getText().toString());
+                startActivity(new Intent(this, WakeActivity.class));
+            }
+        });
+        root.addView(startNow);
+
+        Button pin = new Button(this);
+        pin.setText("Add a button to the home screen");
+        pin.setOnClickListener(v -> addToHomeScreen());
+        root.addView(pin);
+
+        pcResult = label("");
+        root.addView(pcResult);
 
         root.addView(label("\nOn-device model (Gemini Nano, from Google)"));
         nanoStatus = label("Checking...");
@@ -410,7 +459,92 @@ public class SettingsActivity extends Activity {
         return view;
     }
 
+    // ---------- Start Claude on the PC ----------
+
+    /** Saves the MAC address if it is blank or valid. Otherwise says what is wrong and returns false. */
+    private boolean saveMac() {
+        String text = mac.getText().toString().trim();
+        if (text.isEmpty()) {
+            prefs.setPcMac("");
+            return true;
+        }
+        byte[] parsed = WakeOnLan.parseMac(text);
+        if (parsed == null) {
+            pcResult.setText("That is not a MAC address. It looks like AA:BB:CC:DD:EE:FF.");
+            return false;
+        }
+        prefs.setPcMac(WakeOnLan.format(parsed));
+        mac.setText(WakeOnLan.format(parsed));
+        return true;
+    }
+
+    /** Asks the bridge which network cards the PC has, and fills in the likeliest one. */
+    private void fetchMac() {
+        final String base = url.getText().toString().trim();
+        final String secret = token.getText().toString().trim();
+        if (!BridgeClient.isAllowedBase(base) || secret.isEmpty()) {
+            pcResult.setText("Fill in the PC address and the token above first.");
+            return;
+        }
+        pcResult.setText("Asking the PC...");
+        probe.execute(() -> {
+            String message;
+            String found = null;
+            try {
+                JSONArray cards = BridgeClient.wakeInfo(base, secret);
+                if (cards.length() == 0) {
+                    message = "The PC did not report a network card. Type its MAC address by hand: on the PC, run "
+                            + "ipconfig /all and copy the Physical Address of the Ethernet adapter.";
+                } else {
+                    StringBuilder list = new StringBuilder("Found on the PC:");
+                    for (int i = 0; i < cards.length(); i++) {
+                        JSONObject card = cards.getJSONObject(i);
+                        list.append('\n').append(card.optString("name")).append(": ").append(card.getString("mac"));
+                    }
+                    found = cards.getJSONObject(0).getString("mac");
+                    message = list + "\nFilled in the first one. A cable connection wakes a PC most reliably.";
+                }
+            } catch (IOException | JSONException e) {
+                message = "Could not ask the PC: " + e.getMessage();
+            }
+            final String shown = message;
+            final String filledIn = found;
+            ui.post(() -> {
+                if (filledIn != null) {
+                    mac.setText(filledIn);
+                }
+                pcResult.setText(shown);
+            });
+        });
+    }
+
+    /** Asks the home screen to add a one-tap "Start Claude" button. The home screen shows its own confirmation. */
+    private void addToHomeScreen() {
+        if (!saveMac()) {
+            return;
+        }
+        prefs.saveBridge(url.getText().toString(), token.getText().toString());
+        ShortcutManager manager = getSystemService(ShortcutManager.class);
+        if (manager == null || !manager.isRequestPinShortcutSupported()) {
+            pcResult.setText("This home screen cannot add buttons. Touch and hold the Jarvis icon instead: "
+                    + "\"Start Claude on my PC\" is in its menu, and you can drag it out onto the home screen.");
+            return;
+        }
+        ShortcutInfo info = new ShortcutInfo.Builder(this, "start_pc_pinned")
+                .setShortLabel(getString(R.string.shortcut_start_short))
+                .setLongLabel(getString(R.string.shortcut_start_long))
+                .setIcon(Icon.createWithResource(this, R.drawable.ic_pc_shortcut))
+                .setIntent(new Intent(this, WakeActivity.class).setAction(Intent.ACTION_VIEW))
+                .build();
+        pcResult.setText(manager.requestPinShortcut(info, null)
+                ? "Your home screen will ask you to confirm."
+                : "The home screen said no. Touch and hold the Jarvis icon instead: the button is in its menu.");
+    }
+
     private void saveAndTest() {
+        if (!saveMac()) {
+            return;
+        }
         final String base = url.getText().toString().trim();
         prefs.saveBridge(base, token.getText().toString());
         if (!BridgeClient.isAllowedBase(base)) {

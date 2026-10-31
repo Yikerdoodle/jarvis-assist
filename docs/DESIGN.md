@@ -38,6 +38,33 @@ An earlier plan for this was reviewed against current sources before building. W
 * Claude runs with all tools disabled in an empty working folder. Anything that changes the phone or
   files will be a separate, confirmed step.
 
+## Start Claude on the PC (home-screen button)
+
+```
+ phone: WakeActivity (pinned shortcut)           PC bridge
+ ┌──────────────────────────────────┐            ┌────────────────────────────────────────┐
+ │ 1. GET /v1/health  ── answers? ──┼── tailnet ►│                                        │
+ │    no: Wake-on-LAN broadcast on  │            │ POST /v1/remote/start                  │
+ │    the home Wi-Fi, poll health   │            │   same checks as /v1/ask               │
+ │ 2. POST /v1/remote/start ────────┼───────────►│   already running? → say so            │
+ │ 3. open the Claude app           │            │   else start `claude remote-control`   │
+ └──────────────────────────────────┘            │   hidden, in the folder from           │
+                                                 │   launcher.json, no input, log to file │
+                                                 └────────────────────────────────────────┘
+```
+
+* The request carries nothing. The command, folder and options come only from `launcher.json` on the PC, so a
+  request can never choose what runs or where. `bypassPermissions` cannot be configured.
+* "Already running" is decided by looking at the PC's real processes (a whole-argument match on
+  `claude remote-control`), so it also covers one started by hand or by an earlier run of the bridge. A lock
+  makes two quick taps start one copy.
+* The child gets the same cleaned environment as the ask engine: no API keys, no inherited Claude session.
+* The wake-up packet is a broadcast on the home Wi-Fi, bound to that network so it cannot be swallowed by the
+  VPN. It never goes through Tailscale, so waking only works at home. The packet is not secret and is not
+  authenticated; it can only wake a PC that was set up to listen.
+* The phone learns the PC's MAC from `GET /v1/wake-info` (token required), which lists connected, physical
+  network cards only.
+
 ## Roadmap
 
 1. **Shell** (this): tile, ask screen, voice in, spoken out, bridge to Claude, engine switch.

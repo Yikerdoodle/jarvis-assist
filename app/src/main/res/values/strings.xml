@@ -3,4 +3,6 @@
     <string name="app_name">Jarvis Assist</string>
     <string name="tile_label">Ask Jarvis</string>
     <string name="settings_title">Jarvis settings</string>
+    <string name="shortcut_start_short">Start Claude</string>
+    <string name="shortcut_start_long">Start Claude on my PC</string>
 </resources>
