@@ -16,7 +16,7 @@ This is a small stand-alone project. It has nothing to do with the rest of the r
  phone (Android app, Java)                           each computer (Python, standard library only)
  ┌────────────────────────────────┐                  ┌──────────────────────────────────────┐
  │ your list:                     │   Tailscale      │ GET  /v1/health                      │
- │   1. nk-pc-asus   ◄── first    │  (or the home    │ POST /v1/remote/start                │
+ │   1. njk-laptop   ◄── first    │  (or the home    │ POST /v1/remote/start                │
  │   2. another computer          │   network)       │   starts `claude remote-control`     │
  │                                │ ───────────────► │   hidden, once                       │
  │ for each, in order:            │                  │ POST /v1/pair                        │
@@ -68,14 +68,14 @@ You need Python 3.10 or newer, Tailscale (signed in), and the `claude` command l
    switch on Wake on LAN in the BIOS/UEFI (it may be called "Power on by PCI-E"). Test from **sleep** first. If
    waking from a full shutdown fails, turn off Windows "Fast startup".
 
-The name the phone shows is the Windows computer name (for example `NK-PC-ASUS`). Set `START_CLAUDE_NAME` to
+The name the phone shows is the Windows computer name (for example `NJK-LAPTOP`). Set `START_CLAUDE_NAME` to
 change it.
 
 ## Set up the phone (once)
 
 1. Download the APK from the newest run in the Actions tab (Artifacts) and install it. If you are installing a
    newer build over an older one, uninstall the older one first (see "Updates" below).
-2. Open **Start Claude**. Under "Add a computer", type its Tailscale name, for example `nk-pc-asus`, and tap
+2. Open **Start Claude**. Under "Add a computer", type its Tailscale name, for example `njk-laptop`, and tap
    **Add and pair**. That is all: the computer hands over its name, its wake-up address and its home-network
    address by itself. There is no token to copy. Tailscale must be on in the phone for this step.
 3. Add your other computers the same way. The list is the **priority order**: first is tried first. Use Up and
@@ -84,7 +84,7 @@ change it.
 5. Tap **Add a button to the home screen** and confirm. (If your home screen cannot do that, touch and hold the
    Start Claude icon: "Start Claude on my PC" is in the menu, and you can drag it out.)
 
-Now tap the new button. A screen shows what is happening ("nk-pc-asus: Waking your PC... 12 s", "Starting
+Now tap the new button. A screen shows what is happening ("njk-laptop: Waking your PC... 12 s", "Starting
 Claude...") and then opens the Claude app. Look for the computer under **Code**.
 
 **How the order works.** The button takes the list top to bottom. A computer that is awake is used at once. One
@@ -92,8 +92,8 @@ that is asleep is woken and waited for (up to 2.5 minutes). One that cannot be r
 because you are away from home, is skipped straight away. If a computer answers but cannot start Claude, the
 button moves on to the next. If none works, it tells you why for each.
 
-If a short name like `nk-pc-asus` does not work on your phone, use the full name
-(`nk-pc-asus.<your-tailnet>.ts.net`) or the `100.x.y.z` address instead.
+If a short name like `njk-laptop` does not work on your phone, use the full name
+(`njk-laptop.<your-tailnet>.ts.net`) or the `100.x.y.z` address instead.
 
 ## Good to know
 
