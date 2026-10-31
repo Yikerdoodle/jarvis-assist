@@ -44,10 +44,11 @@ public class AskActivity extends Activity {
     private static final int REQ_MIC = 1;
     private static final String[] ENGINE_IDS = {"auto", "claude", "cloud", "local"};
     private static final String[] ENGINE_LABELS = {"Auto", "Claude", "Free cloud", "On-device"};
-    private static final boolean[] ENGINE_READY = {true, true, false, false};
+    private static final boolean[] ENGINE_READY = {true, true, false, true};
 
     private Prefs prefs;
     private final BridgeClient bridge = new BridgeClient();
+    private final NanoEngine onDevice = new NanoEngine();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final ExecutorService probe = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -121,6 +122,7 @@ public class AskActivity extends Activity {
     @Override
     protected void onDestroy() {
         bridge.cancel();
+        onDevice.close();
         if (recognizer != null) {
             recognizer.destroy();
         }
@@ -242,6 +244,8 @@ public class AskActivity extends Activity {
         send.setOnClickListener(v -> {
             if (busy) {
                 bridge.cancel();
+                onDevice.cancel();
+                finishAsk("Stopped.");
             } else {
                 submit(input.getText().toString());
             }
@@ -282,6 +286,9 @@ public class AskActivity extends Activity {
     private void newChat() {
         if (busy) {
             bridge.cancel();
+            onDevice.cancel();
+            busy = false;
+            updateButtons();
         }
         if (tts != null) {
             tts.stop();
@@ -299,6 +306,15 @@ public class AskActivity extends Activity {
         if (busy || text.isEmpty()) {
             return;
         }
+        final String engine = Router.pick(prefs.engine());
+        if (engine == null) {
+            setStatus("That engine is not set up yet. Choose Auto, Claude or On-device.");
+            return;
+        }
+        if (engine.equals("local")) {
+            askOnDevice(text); // needs no PC and no network
+            return;
+        }
         final String base = prefs.bridgeUrl();
         final String token = prefs.token();
         if (base.isEmpty() || token.isEmpty()) {
@@ -307,11 +323,6 @@ public class AskActivity extends Activity {
         }
         if (!BridgeClient.isAllowedBase(base)) {
             setStatus("The PC address must be https, or a Tailscale address.");
-            return;
-        }
-        final String engine = Router.pick(prefs.engine());
-        if (engine == null) {
-            setStatus("That engine is not set up yet. Choose Auto or Claude.");
             return;
         }
         final JSONObject body = new JSONObject();
@@ -377,6 +388,67 @@ public class AskActivity extends Activity {
                 });
             }
         }));
+    }
+
+    /** Answers with Gemini Nano on the phone. Shows how long it took, so the engines can be compared. */
+    private void askOnDevice(final String text) {
+        final List<String> past = new ArrayList<>();
+        for (JSONObject turn : history) {
+            past.add((turn.optString("role").equals("user") ? "Owner: " : "Jarvis: ") + turn.optString("text"));
+        }
+        if (tts != null) {
+            tts.stop();
+        }
+        stopListening();
+        input.setText("");
+        transcriptBase = transcript.getText() + (transcript.length() == 0 ? "" : "\n\n") + "You: " + text + "\n\n";
+        reply.setLength(0);
+        pendingSpeech.setLength(0);
+        busy = true;
+        updateButtons();
+        setStatus("Asking Gemini Nano on the phone...");
+        renderReply();
+
+        onDevice.ask(past, text, new NanoEngine.Listener() {
+            @Override
+            public void onStatus(String statusText) {
+                ui.post(() -> setStatus(statusText));
+            }
+
+            @Override
+            public void onDelta(String delta) {
+                ui.post(() -> {
+                    reply.append(delta);
+                    renderReply();
+                    speakChunk(delta);
+                });
+            }
+
+            @Override
+            public void onDone(String full, NanoEngine.Stats stats) {
+                ui.post(() -> {
+                    reply.setLength(0);
+                    reply.append(full);
+                    renderReply();
+                    flushSpeech();
+                    remember(text, full);
+                    double seconds = Math.max(0.001, (stats.getTotalMs() - stats.getFirstTokenMs()) / 1000.0);
+                    finishAsk(String.format(Locale.ROOT, "On-device (Gemini Nano): first word %.1f s, %.1f words/s, "
+                                    + "%d words%s", stats.getFirstTokenMs() / 1000.0, stats.getWords() / seconds,
+                            stats.getWords(), stats.getLoadMs() > 0
+                                    ? String.format(Locale.ROOT, ", model load %.1f s", stats.getLoadMs() / 1000.0) : ""));
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                ui.post(() -> {
+                    transcriptBase = transcriptBase + "[" + message + "]";
+                    transcript.setText(transcriptBase);
+                    finishAsk(message);
+                });
+            }
+        });
     }
 
     private void finishAsk(String statusText) {
