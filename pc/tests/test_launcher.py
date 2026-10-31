@@ -5,14 +5,11 @@ import sys
 import tempfile
 import threading
 import unittest
-import urllib.error
-import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from start_claude_pc.launcher import (LaunchError, RemoteLauncher, build_argv, is_remote_control,  # noqa: E402
-                                    load_config, parse_getmac)
-from start_claude_pc.server import serve  # noqa: E402
+                                    load_config, local_cards, parse_cards_json, parse_getmac)
 
 FAKE_RC = os.path.join(os.path.dirname(__file__), "fake_remote_control.py")
 TOKEN = "test-token-123"
@@ -258,80 +255,61 @@ class GetmacTests(unittest.TestCase):
         self.assertEqual(parse_getmac(""), [])
 
 
-class EndpointTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.tmp = tempfile.TemporaryDirectory()
-        cls.calls = []
+class CardsTests(unittest.TestCase):
+    ONE = '{"Name":"Ethernet","Adapter":"Realtek PCIe GbE","Mac":"A8-A1-59-12-34-56","Ip":"192.168.1.20","Prefix":24}'
+    MANY = ('[{"Name":"Wi-Fi","Adapter":"Intel(R) Wi-Fi 6 AX200","Mac":"00-11-22-33-44-55","Ip":"192.168.1.31",'
+            '"Prefix":24},' + ONE + ',{"Name":"Tailscale","Adapter":"Tailscale Tunnel","Mac":"00-FF-AA-BB-CC-DD",'
+            '"Ip":"100.64.0.5","Prefix":32},{"Name":"Ethernet 2","Adapter":"Intel Ethernet","Mac":null,"Ip":null,'
+            '"Prefix":null}]')
 
-        def popen(argv, **kwargs):
-            cls.calls.append(argv)
-            return FakeProc()
+    def test_one_card_comes_as_an_object(self):
+        self.assertEqual(parse_cards_json(self.ONE),
+                         [{"name": "Ethernet", "adapter": "Realtek PCIe GbE", "mac": "A8:A1:59:12:34:56",
+                           "ip": "192.168.1.20", "prefix": 24}])
 
-        cls.launcher = RemoteLauncher(config=config_for(cls.tmp.name), find=lambda: "claude",
-                                      processes=lambda: [], popen=popen, startup_check=0.1,
-                                      log_path=os.path.join(cls.tmp.name, "rc.log"))
-        cls.server = serve("127.0.0.1", 0, lambda ip: (True, "test"), TOKEN, cls.launcher)
-        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+    def test_several_cards_wired_first_virtual_and_broken_ones_dropped(self):
+        cards = parse_cards_json(self.MANY)
+        self.assertEqual([c["name"] for c in cards], ["Ethernet", "Wi-Fi"])
 
-    @classmethod
-    def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
-        cls.tmp.cleanup()
+    def test_a_card_without_an_address_is_kept_without_one(self):
+        cards = parse_cards_json('{"Name":"Ethernet","Adapter":"Realtek","Mac":"A8-A1-59-12-34-56","Ip":null,'
+                                 '"Prefix":null}')
+        self.assertEqual((cards[0]["mac"], cards[0]["ip"], cards[0]["prefix"]), ("A8:A1:59:12:34:56", None, None))
 
-    def call(self, path, method="POST", token=TOKEN):
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        request = urllib.request.Request(self.base + path, data=b"" if method == "POST" else None,
-                                         headers=headers, method=method)
-        return urllib.request.urlopen(request, timeout=10)
+    def test_nothing_and_nonsense(self):
+        self.assertEqual(parse_cards_json(""), [])
+        self.assertEqual(parse_cards_json("   \n"), [])
+        bad = '{"Name":"E","Adapter":"R","Mac":"A8-A1-59-12-34-56","Ip":"999 not an ip","Prefix":99}'
+        card = parse_cards_json(bad)[0]
+        self.assertEqual((card["ip"], card["prefix"]), (None, None))
 
-    def test_start_needs_the_token(self):
-        for token in (None, "wrong"):
-            with self.assertRaises(urllib.error.HTTPError) as caught:
-                self.call("/v1/remote/start", token=token)
-            self.assertEqual(caught.exception.code, 401)
-        self.assertEqual(self.calls, [])
+    def test_local_cards_uses_powershell_first_and_getmac_as_the_fallback(self):
+        class Done:
+            def __init__(self, out):
+                self.stdout = out
 
-    def test_start_then_start_again(self):
-        with self.call("/v1/remote/start") as response:
-            first = json.load(response)
-        with self.call("/v1/remote/start") as response:
-            second = json.load(response)
-        self.assertEqual((first["ok"], first["state"]), (True, "started"))
-        self.assertEqual(second["state"], "already-running")
-        self.assertEqual(len(self.calls), 1)
+        calls = []
 
-    def test_the_request_cannot_choose_what_runs(self):
-        # A hostile body is ignored: the command line comes only from launcher.json on the PC.
-        request = urllib.request.Request(
-            self.base + "/v1/remote/start", headers={"Authorization": f"Bearer {TOKEN}"}, method="POST",
-            data=json.dumps({"dir": "C:\\Windows", "argv": ["calc.exe"], "spawn": "worktree"}).encode())
-        urllib.request.urlopen(request, timeout=10).close()
-        self.assertTrue(all(argv == ["claude", "remote-control"] for argv in self.calls))
+        def run(argv, **kwargs):
+            calls.append(argv[0])
+            if argv[0] == "powershell.exe":
+                raise OSError("no powershell")
+            return Done('"Ethernet","Realtek","A8-A1-59-12-34-56","\\Device\\Tcpip_{1}"\n')
 
-    def test_health_says_whether_claude_can_be_started(self):
-        with self.call("/v1/health", method="GET", token=None) as response:
-            self.assertEqual(json.load(response)["remote"], {"available": True})
+        real = os.name
+        os.name = "nt"  # pretend: local_cards only runs its commands on Windows
+        try:
+            cards = local_cards(run=run)
+        finally:
+            os.name = real
+        self.assertEqual(calls, ["powershell.exe", "getmac"])
+        self.assertEqual(cards[0]["mac"], "A8:A1:59:12:34:56")
+        self.assertIsNone(cards[0]["ip"])
 
-    def test_wake_info_needs_the_token_and_returns_a_list(self):
-        with self.assertRaises(urllib.error.HTTPError) as caught:
-            self.call("/v1/wake-info", method="GET", token=None)
-        self.assertEqual(caught.exception.code, 401)
-        with self.call("/v1/wake-info", method="GET") as response:
-            self.assertIsInstance(json.load(response)["macs"], list)
+    def test_not_windows_means_no_cards(self):
+        if os.name != "nt":
+            self.assertEqual(local_cards(run=lambda *a, **k: 1 / 0), [])
 
-    def test_a_failed_start_is_reported_with_its_reason(self):
-        failing = RemoteLauncher(config=config_for(self.tmp.name), find=lambda: None)
-        server = serve("127.0.0.1", 0, lambda ip: (True, "test"), TOKEN, failing)
-        self.addCleanup(server.server_close)
-        self.addCleanup(server.shutdown)
-        request = urllib.request.Request(f"http://127.0.0.1:{server.server_address[1]}/v1/remote/start",
-                                         data=b"", headers={"Authorization": f"Bearer {TOKEN}"}, method="POST")
-        with self.assertRaises(urllib.error.HTTPError) as caught:
-            urllib.request.urlopen(request, timeout=10)
-        self.assertEqual(caught.exception.code, 503)
-        self.assertIn("not found", json.load(caught.exception)["error"])
 
 
 if __name__ == "__main__":

@@ -23,17 +23,18 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** The one settings screen: where the PC is, how to wake it, and the button for the home screen. */
+/** The one settings screen: your computers in priority order, and the button for the home screen. */
 public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
-    private final ExecutorService probe = Executors.newSingleThreadExecutor();
+    private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private Prefs prefs;
-    private EditText url;
-    private EditText token;
-    private EditText mac;
+    private LinearLayout computersBox;
+    private EditText address;
     private TextView result;
 
     @Override
@@ -55,56 +56,44 @@ public class MainActivity extends Activity {
         title.setText("Start Claude on my PC");
         title.setTextSize(22);
         root.addView(title);
-        root.addView(label("Put a button on your home screen. One tap wakes your PC if it is asleep, starts Claude "
-                + "on it, and opens the Claude app so you can start sessions from here. Set it up once:"));
+        root.addView(label("One tap on the home-screen button goes down this list, top first. It wakes a sleeping "
+                + "computer if it can (only from your home Wi-Fi), starts Claude on it unless it is already "
+                + "running, and opens the Claude app. A computer that cannot be reached or woken is skipped for "
+                + "the next one."));
 
-        root.addView(label("1. The PC's Tailscale address, with the port. For example http://100.x.y.z:8788"));
-        url = new EditText(this);
-        url.setSingleLine(true);
-        url.setHint("http://100.x.y.z:8788");
-        url.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        url.setText(prefs.bridgeUrl());
-        root.addView(url);
+        root.addView(label("Your computers, first choice first"));
+        computersBox = new LinearLayout(this);
+        computersBox.setOrientation(LinearLayout.VERTICAL);
+        root.addView(computersBox);
 
-        root.addView(label("2. The token. On the PC it is the file pc\\data\\token. Do not share it."));
-        token = new EditText(this);
-        token.setSingleLine(true);
-        token.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        token.setText(prefs.token());
-        root.addView(token);
+        root.addView(label("Add a computer: type its name on your Tailscale network (like nk-pc-asus) or its "
+                + "100.x.y.z address. Tailscale must be on here, and the Start Claude program must be installed "
+                + "on that computer. Nothing else to type: the app pairs with it by itself."));
+        address = new EditText(this);
+        address.setSingleLine(true);
+        address.setHint("nk-pc-asus");
+        address.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        root.addView(address);
 
-        root.addView(label("3. Optional: the PC's network address (MAC), so the button can wake it when it is "
-                + "asleep. It only works on your home Wi-Fi. It looks like AA:BB:CC:DD:EE:FF."));
-        mac = new EditText(this);
-        mac.setSingleLine(true);
-        mac.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
-                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        mac.setText(prefs.pcMac());
-        root.addView(mac);
+        Button add = new Button(this);
+        add.setText("Add and pair");
+        add.setOnClickListener(v -> addComputer());
+        root.addView(add);
 
-        Button fetchMac = new Button(this);
-        fetchMac.setText("Get it from the PC");
-        fetchMac.setOnClickListener(v -> fetchMac());
-        root.addView(fetchMac);
-
-        Button save = new Button(this);
-        save.setText("Save and test");
-        save.setOnClickListener(v -> saveAndTest());
-        root.addView(save);
+        Button test = new Button(this);
+        test.setText("Check all computers");
+        test.setOnClickListener(v -> checkAll());
+        root.addView(test);
 
         CheckBox openClaude = new CheckBox(this);
-        openClaude.setText("Open the Claude app when the PC is ready");
+        openClaude.setText("Open the Claude app when a computer is ready");
         openClaude.setChecked(prefs.openClaudeWhenReady());
         openClaude.setOnCheckedChangeListener((box, checked) -> prefs.setOpenClaudeWhenReady(checked));
         root.addView(openClaude);
 
         Button startNow = new Button(this);
-        startNow.setText("Start Claude on the PC now");
-        startNow.setOnClickListener(v -> {
-            if (saveFields()) {
-                startActivity(new Intent(this, WakeActivity.class));
-            }
-        });
+        startNow.setText("Start Claude now");
+        startNow.setOnClickListener(v -> startActivity(new Intent(this, WakeActivity.class)));
         root.addView(startNow);
 
         Button pin = new Button(this);
@@ -116,95 +105,166 @@ public class MainActivity extends Activity {
         root.addView(result);
 
         setContentView(scroll);
+        renderComputers();
     }
 
     @Override
     protected void onDestroy() {
-        probe.shutdownNow();
+        worker.shutdownNow();
         super.onDestroy();
     }
 
-    /** Saves what is typed if it is acceptable. Otherwise says what is wrong and returns false. */
-    private boolean saveFields() {
-        String address = url.getText().toString().trim();
-        if (!address.isEmpty() && !BridgeClient.isAllowedBase(address)) {
-            result.setText("Not allowed: use https, or an http address on your Tailscale network (100.x.x.x).");
-            return false;
-        }
-        String text = mac.getText().toString().trim();
-        if (!text.isEmpty()) {
-            byte[] parsed = WakeOnLan.parseMac(text);
-            if (parsed == null) {
-                result.setText("That is not a MAC address. It looks like AA:BB:CC:DD:EE:FF.");
-                return false;
-            }
-            text = WakeOnLan.format(parsed);
-            mac.setText(text);
-        }
-        prefs.savePc(address, token.getText().toString());
-        prefs.setPcMac(text);
-        return true;
-    }
+    // ---------- The list ----------
 
-    private void saveAndTest() {
-        if (!saveFields()) {
+    private void renderComputers() {
+        computersBox.removeAllViews();
+        final List<Computer> list = prefs.computers();
+        if (list.isEmpty()) {
+            computersBox.addView(label("None yet."));
             return;
         }
-        final String base = url.getText().toString().trim();
-        result.setText("Testing...");
-        probe.execute(() -> {
-            final String problem = BridgeClient.health(base);
-            ui.post(() -> result.setText(problem == null
-                    ? "Connected. The PC is ready to start Claude."
-                    : "Not ready: " + problem));
-        });
+        for (int i = 0; i < list.size(); i++) {
+            final int index = i;
+            Computer c = list.get(i);
+            TextView text = new TextView(this);
+            text.setText((i + 1) + ". " + c.name + "\n   Tailscale: " + c.tsBase
+                    + "\n   Wake-up address: " + (c.mac.isEmpty() ? "not known" : c.mac)
+                    + "\n   Home network: " + (c.lanBases.isEmpty() ? "not known" : String.join(", ", c.lanBases)));
+            text.setPadding(0, dp(10), 0, dp(2));
+            computersBox.addView(text);
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.addView(smallButton("Up", index > 0, v -> move(index, index - 1)));
+            row.addView(smallButton("Down", index < list.size() - 1, v -> move(index, index + 1)));
+            row.addView(smallButton("Remove", true, v -> remove(index)));
+            computersBox.addView(row);
+        }
     }
 
-    /** Asks the PC which network cards it has, and fills in the likeliest one. */
-    private void fetchMac() {
-        final String base = url.getText().toString().trim();
-        final String secret = token.getText().toString().trim();
-        if (!BridgeClient.isAllowedBase(base) || secret.isEmpty()) {
-            result.setText("Fill in the PC address and the token above first.");
+    private Button smallButton(String text, boolean enabled, android.view.View.OnClickListener listener) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setEnabled(enabled);
+        button.setOnClickListener(listener);
+        return button;
+    }
+
+    private void move(int from, int to) {
+        List<Computer> list = prefs.computers();
+        if (from < 0 || to < 0 || from >= list.size() || to >= list.size()) {
             return;
         }
-        result.setText("Asking the PC...");
-        probe.execute(() -> {
+        list.add(to, list.remove(from));
+        prefs.saveComputers(list);
+        renderComputers();
+    }
+
+    private void remove(int index) {
+        List<Computer> list = prefs.computers();
+        if (index < 0 || index >= list.size()) {
+            return;
+        }
+        String name = list.remove(index).name;
+        prefs.saveComputers(list);
+        renderComputers();
+        result.setText("Removed " + name + ".");
+    }
+
+    // ---------- Adding and checking ----------
+
+    private void addComputer() {
+        final String base = Address.normalize(address.getText().toString());
+        if (base.isEmpty()) {
+            result.setText("Type the computer's name or Tailscale address first.");
+            return;
+        }
+        if (!Address.isAllowedBase(base)) {
+            result.setText("Not allowed: use a computer name like nk-pc-asus, or a Tailscale address (100.x.x.x).");
+            return;
+        }
+        result.setText("Pairing with " + base + "...");
+        worker.execute(() -> {
             String message;
-            String found = null;
+            Computer paired = null;
             try {
-                JSONArray cards = BridgeClient.wakeInfo(base, secret);
-                if (cards.length() == 0) {
-                    message = "The PC did not report a network card. Type its MAC address by hand: on the PC, run "
-                            + "ipconfig /all and copy the Physical Address of the Ethernet adapter.";
-                } else {
-                    StringBuilder list = new StringBuilder("Found on the PC:");
-                    for (int i = 0; i < cards.length(); i++) {
-                        JSONObject card = cards.getJSONObject(i);
-                        list.append('\n').append(card.optString("name")).append(": ").append(card.getString("mac"));
-                    }
-                    found = cards.getJSONObject(0).getString("mac");
-                    message = list + "\nFilled in the first one. A cable connection wakes a PC most reliably.";
+                JSONObject answer = BridgeClient.pair(base);
+                List<String[]> cards = new ArrayList<>();
+                JSONArray array = answer.optJSONArray("cards");
+                for (int i = 0; array != null && i < array.length(); i++) {
+                    JSONObject card = array.getJSONObject(i);
+                    cards.add(new String[]{card.optString("mac"), card.optString("ip")});
                 }
+                paired = Computer.fromPairing(base, answer.getString("name"), answer.getString("token"),
+                        answer.optInt("port", Address.DEFAULT_PORT), cards);
+                message = "Paired with " + paired.name + "."
+                        + (paired.mac.isEmpty() ? " It cannot be woken from here (no network card address came back)." : "")
+                        + (paired.lanBases.isEmpty() ? " No home-network address came back, so there is no home-network fallback." : "");
             } catch (IOException | JSONException e) {
-                message = "Could not ask the PC: " + e.getMessage();
+                message = "Could not pair: " + (e instanceof IOException ? e.getMessage()
+                        : "the computer sent something unexpected.");
             }
             final String shown = message;
-            final String filledIn = found;
+            final Computer found = paired;
             ui.post(() -> {
-                if (filledIn != null) {
-                    mac.setText(filledIn);
+                if (found != null) {
+                    saveOrReplace(found);
+                    address.setText("");
                 }
                 result.setText(shown);
             });
         });
     }
 
-    /** Asks the home screen to add a one-tap "Start Claude" button. The home screen shows its own confirmation. */
-    private void addToHomeScreen() {
-        if (!saveFields()) {
+    /** A computer that is already in the list (same name) is updated where it stands; a new one goes last. */
+    private void saveOrReplace(Computer found) {
+        List<Computer> list = prefs.computers();
+        boolean replaced = false;
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).name.equalsIgnoreCase(found.name)) {
+                list.set(i, found);
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced) {
+            list.add(found);
+        }
+        prefs.saveComputers(list);
+        renderComputers();
+    }
+
+    /** Asks each computer, without waking or starting anything, whether it would answer right now. */
+    private void checkAll() {
+        final List<Computer> list = prefs.computers();
+        if (list.isEmpty()) {
+            result.setText("Add a computer first.");
             return;
         }
+        result.setText("Checking...");
+        worker.execute(() -> {
+            StringBuilder out = new StringBuilder();
+            for (Computer c : list) {
+                PcLink link = new PcLink(getApplicationContext(), c);
+                int code = link.ping();
+                out.append(c.name).append(": ");
+                if (code == 200) {
+                    out.append("ready, reached ").append(link.answeredOverTailscale() ? "over Tailscale" : "on the home network");
+                } else if (code == -1) {
+                    out.append("no answer (asleep, off, or out of reach)")
+                            .append(link.canWake() ? ". Can be woken from here." : ". Cannot be woken from here right now.");
+                } else {
+                    out.append("answered ").append(code).append(" but refused this phone");
+                }
+                out.append('\n');
+            }
+            final String shown = out.toString().trim();
+            ui.post(() -> result.setText(shown));
+        });
+    }
+
+    /** Asks the home screen to add a one-tap "Start Claude" button. The home screen shows its own confirmation. */
+    private void addToHomeScreen() {
         ShortcutManager manager = getSystemService(ShortcutManager.class);
         if (manager == null || !manager.isRequestPinShortcutSupported()) {
             result.setText("This home screen cannot add buttons. Touch and hold the Start Claude icon instead: "

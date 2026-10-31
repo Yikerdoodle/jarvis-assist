@@ -1,6 +1,5 @@
 package io.github.startclaude;
 
-import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -8,42 +7,11 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
-import java.net.URI;
 import java.net.URL;
 
-/** Talks to the listener on the PC. All methods block, so call them off the main thread. */
+/** Talks to the program on a computer. All methods block, so call them off the main thread. */
 final class BridgeClient {
     private BridgeClient() {
-    }
-
-    /** https is always fine; plain http only for tailnet (100.64.0.0/10), *.ts.net and loopback addresses. */
-    static boolean isAllowedBase(String base) {
-        try {
-            URI uri = new URI(base.trim());
-            String scheme = uri.getScheme();
-            String host = uri.getHost();
-            if (scheme == null || host == null) {
-                return false;
-            }
-            if (scheme.equals("https")) {
-                return true;
-            }
-            if (!scheme.equals("http")) {
-                return false;
-            }
-            if (host.equals("localhost") || host.equals("127.0.0.1") || host.endsWith(".ts.net")) {
-                return true;
-            }
-            String[] parts = host.split("\\.");
-            if (parts.length != 4) {
-                return false;
-            }
-            int first = Integer.parseInt(parts[0]);
-            int second = Integer.parseInt(parts[1]);
-            return first == 100 && second >= 64 && second <= 127;
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     private static String trim(String base) {
@@ -54,41 +22,27 @@ final class BridgeClient {
         return b;
     }
 
-    /** Returns null when the PC is ready to start Claude, otherwise a short reason. */
-    static String health(String base) {
-        HttpURLConnection c = null;
-        try {
-            c = (HttpURLConnection) new URL(trim(base) + "/v1/health").openConnection();
-            c.setConnectTimeout(3000);
-            c.setReadTimeout(4000);
-            int code = c.getResponseCode();
-            if (code == 403) {
-                return "The PC refused this phone. Is Tailscale signed in to the same account on both?";
-            }
-            if (code != 200) {
-                return "The PC answered " + code;
-            }
-            JSONObject remote = new JSONObject(readAll(c.getInputStream())).optJSONObject("remote");
-            if (remote == null || !remote.optBoolean("available")) {
-                return "The program on the PC cannot find the claude command";
-            }
-            return null;
-        } catch (IOException | JSONException e) {
-            return "PC unreachable (is Tailscale on?)";
-        } finally {
-            if (c != null) {
-                c.disconnect();
-            }
+    /** Over Tailscale the PC already knows this phone, so the signature is not needed there but does no harm. */
+    private static HttpURLConnection open(String base, String path, String method, String token, int connectMs,
+                                          int readMs) throws IOException {
+        HttpURLConnection c = (HttpURLConnection) new URL(trim(base) + path).openConnection();
+        c.setRequestMethod(method);
+        c.setConnectTimeout(connectMs);
+        c.setReadTimeout(readMs);
+        // No connection re-use: Android could otherwise quietly re-send a request on a stale connection, and
+        // the PC refuses a signed request it has already seen.
+        c.setRequestProperty("Connection", "close");
+        if (token != null && !token.isEmpty()) {
+            c.setRequestProperty("Authorization", Signer.header(token, method, path));
         }
+        return c;
     }
 
-    /** The HTTP status of the health check, or -1 if the PC cannot be reached. Quick, so it can be polled. */
-    static int ping(String base) {
+    /** The HTTP status of the health check, or -1 if nothing answered. Quick, so it can be polled. */
+    static int ping(String base, String token, int connectMs) {
         HttpURLConnection c = null;
         try {
-            c = (HttpURLConnection) new URL(trim(base) + "/v1/health").openConnection();
-            c.setConnectTimeout(3000);
-            c.setReadTimeout(3000);
+            c = open(base, "/v1/health", "GET", token, connectMs, 3000);
             return c.getResponseCode();
         } catch (IOException e) {
             return -1;
@@ -99,16 +53,12 @@ final class BridgeClient {
         }
     }
 
-    /** Asks the PC to start Claude's Remote Control. Never throws. */
+    /** Asks the computer to start Claude's Remote Control. Never throws. */
     static PcStarter.Reply startRemote(String base, String token) {
         HttpURLConnection c = null;
         try {
-            c = (HttpURLConnection) new URL(trim(base) + "/v1/remote/start").openConnection();
-            c.setRequestMethod("POST");
+            c = open(base, "/v1/remote/start", "POST", token, 5000, 40000); // the PC waits a few seconds to see Claude stay up
             c.setDoOutput(true);
-            c.setConnectTimeout(5000);
-            c.setReadTimeout(40000); // the PC checks what is running and waits a few seconds to see Claude stay up
-            c.setRequestProperty("Authorization", "Bearer " + token);
             c.setFixedLengthStreamingMode(0);
             c.getOutputStream().close();
             int code = c.getResponseCode();
@@ -125,21 +75,30 @@ final class BridgeClient {
         }
     }
 
-    /** The PC's network cards, as {name, adapter, mac} objects with the likeliest wired one first. */
-    static JSONArray wakeInfo(String base, String token) throws IOException {
+    /**
+     * Pairs with a computer over Tailscale: it answers with its name, the secret for the home network, and its
+     * network cards. The computer only does this for one of your own Tailscale devices.
+     */
+    static JSONObject pair(String base) throws IOException {
         HttpURLConnection c = null;
         try {
-            c = (HttpURLConnection) new URL(trim(base) + "/v1/wake-info").openConnection();
-            c.setConnectTimeout(4000);
-            c.setReadTimeout(15000);
-            c.setRequestProperty("Authorization", "Bearer " + token);
-            int code = c.getResponseCode();
+            int code;
+            try {
+                c = open(base, "/v1/pair", "POST", null, 4000, 30000);
+                c.setDoOutput(true);
+                c.setFixedLengthStreamingMode(0);
+                c.getOutputStream().close();
+                code = c.getResponseCode();
+            } catch (IOException e) {
+                throw new IOException("Nothing answered at " + trim(base) + ". Is Tailscale on here, is the computer "
+                        + "awake, and is the Start Claude program installed and running on it?");
+            }
             if (code != 200) {
                 throw new IOException(describe(code, c));
             }
-            return new JSONObject(readAll(c.getInputStream())).getJSONArray("macs");
+            return new JSONObject(readAll(c.getInputStream()));
         } catch (JSONException e) {
-            throw new IOException("The PC sent something unexpected. Is the program on the PC up to date?");
+            throw new IOException("The computer sent something unexpected. Is its Start Claude program up to date?");
         } finally {
             if (c != null) {
                 c.disconnect();
@@ -148,18 +107,20 @@ final class BridgeClient {
     }
 
     private static String describe(int code, HttpURLConnection c) {
-        if (code == 401) {
-            return "The token is wrong. Check it in Settings.";
-        }
-        if (code == 403) {
-            return "The PC does not recognise this device. Is Tailscale on?";
-        }
+        String fromPc = "";
         try {
-            JSONObject o = new JSONObject(readAll(c.getErrorStream()));
-            return o.optString("error", "The PC answered " + code);
+            fromPc = new JSONObject(readAll(c.getErrorStream())).optString("error", "");
         } catch (Exception e) {
-            return "The PC answered " + code;
+            // no readable explanation: use the generic one below
         }
+        if (code == 401) {
+            return "The PC did not accept this phone's signature. Either the computer was set up again (remove it "
+                    + "here and add it again), or the clocks of the phone and the PC differ by more than a minute.";
+        }
+        if (code == 403 && (fromPc.isEmpty() || fromPc.equals("device not allowed"))) {
+            return "The PC does not recognise this phone. Is Tailscale on, and signed in to the same account as the PC?";
+        }
+        return fromPc.isEmpty() ? "The PC answered " + code : fromPc;
     }
 
     private static String readAll(InputStream in) throws IOException {

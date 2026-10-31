@@ -238,19 +238,25 @@ class RemoteLauncher:
         return " ".join(_ANSI.sub("", text).split())[-limit:]
 
 
-# ---------- Finding the PC's network card address (for Wake-on-LAN) ----------
+# ---------- The PC's network cards (for Wake-on-LAN and the home-network fallback) ----------
 
 _VIRTUAL = re.compile(r"tailscale|vethernet|virtual|vpn|tap-|wintun|wireguard|loopback|bluetooth|hyper-v|"
                       r"vmware|vbox|npcap|wan miniport", re.I)
 _WIRELESS = re.compile(r"wi-?fi|wireless|wlan|802\.11", re.I)
 _MAC = re.compile(r"([0-9A-Fa-f]{2}-){5}[0-9A-Fa-f]{2}")
+_IPV4 = re.compile(r"\d{1,3}(\.\d{1,3}){3}")
+
+
+def _wired_first(cards):
+    return sorted(cards, key=lambda card: bool(_WIRELESS.search(card["name"] + " " + card["adapter"])))
 
 
 def parse_getmac(text):
-    """Turn `getmac /v /fo csv /nh` output into [{"name", "adapter", "mac"}], wired cards first.
+    """Turn `getmac /v /fo csv /nh` output into [{"name", "adapter", "mac", "ip", "prefix"}], wired cards first.
 
     Only cards that are connected right now are listed (an unplugged or disabled card has no
     \\Device\\Tcpip_ transport), and virtual adapters such as Tailscale, VPNs and Hyper-V are left out.
+    This lists no addresses ("ip" is None); it is the fallback for `parse_cards_json`.
     """
     cards = []
     for row in csv.reader(io.StringIO(text)):
@@ -261,15 +267,53 @@ def parse_getmac(text):
             continue
         if _VIRTUAL.search(f"{name} {adapter}"):
             continue
-        cards.append({"name": name, "adapter": adapter, "mac": mac.replace("-", ":").upper()})
-    cards.sort(key=lambda card: bool(_WIRELESS.search(card["name"] + " " + card["adapter"])))
-    return cards
+        cards.append({"name": name, "adapter": adapter, "mac": mac.replace("-", ":").upper(), "ip": None,
+                      "prefix": None})
+    return _wired_first(cards)
 
 
-def local_macs(run=subprocess.run):
-    """The PC's network cards, for the phone's "get it from the PC" button. Windows only."""
+def parse_cards_json(text):
+    """Turn the PowerShell output below into the same list as parse_getmac, with each card's IPv4 address."""
+    if not text.strip():
+        return []
+    data = json.loads(text)
+    if isinstance(data, dict):  # one card is an object, several are a list
+        data = [data]
+    cards = []
+    for item in data:
+        name, adapter, mac = (str(item.get(key) or "").strip() for key in ("Name", "Adapter", "Mac"))
+        if not _MAC.fullmatch(mac) or _VIRTUAL.search(f"{name} {adapter}"):
+            continue
+        ip = str(item.get("Ip") or "")
+        prefix = item.get("Prefix")
+        cards.append({"name": name, "adapter": adapter, "mac": mac.replace("-", ":").upper(),
+                      "ip": ip if _IPV4.fullmatch(ip) else None,
+                      "prefix": prefix if isinstance(prefix, int) and 0 <= prefix <= 32 else None})
+    return _wired_first(cards)
+
+
+# Physical cards that are up, with their MAC and IPv4 address. Locale-proof: it asks for properties, not text.
+_CARDS_SCRIPT = (
+    "$ErrorActionPreference='SilentlyContinue'; "
+    "Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' } | ForEach-Object { "
+    "$a = Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 | Select-Object -First 1; "
+    "[pscustomobject]@{ Name = $_.Name; Adapter = $_.InterfaceDescription; Mac = $_.MacAddress; "
+    "Ip = $a.IPAddress; Prefix = $a.PrefixLength } } | ConvertTo-Json -Compress"
+)
+
+
+def local_cards(run=subprocess.run):
+    """This PC's connected physical network cards, wired first. Windows only; elsewhere an empty list."""
     if os.name != "nt":
         return []
+    try:
+        done = run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _CARDS_SCRIPT],
+                   capture_output=True, text=True, errors="replace", timeout=25, creationflags=NO_WINDOW)
+        cards = parse_cards_json(done.stdout)
+        if cards:
+            return cards
+    except Exception as exc:  # fall back to the older, address-less way
+        LOG.warning("could not list network cards with PowerShell: %s", exc)
     done = run(["getmac", "/v", "/fo", "csv", "/nh"], capture_output=True, text=True, errors="replace",
                timeout=10, creationflags=NO_WINDOW)
     return parse_getmac(done.stdout)

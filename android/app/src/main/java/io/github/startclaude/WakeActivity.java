@@ -17,12 +17,15 @@ import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * The home-screen button. One tap: find the PC (waking it if it is asleep), start Claude's Remote Control on it,
- * then open the Claude app so sessions can be started from the phone.
+ * The home-screen button. One tap: go down the owner's list of computers, first choice first. Find one (waking it
+ * if it is asleep), start Claude's Remote Control on it, then open the Claude app so sessions can be started from
+ * the phone. A computer that cannot be reached or woken is skipped for the next one.
  *
  * <p>It stays on screen while it works, because waking a PC can take a minute and Android may stop background
  * work. It holds nothing and runs nothing after it closes.
@@ -34,7 +37,7 @@ public class WakeActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private Prefs prefs;
-    private PcLink link;
+    private final List<PcLink> links = new ArrayList<>();
     private TextView status;
     private ProgressBar spinner;
     private Button action;
@@ -123,7 +126,7 @@ public class WakeActivity extends Activity {
     @Override
     protected void onDestroy() {
         destroyed = true;
-        if (link != null) {
+        for (PcLink link : links) {
             link.cancel();
         }
         worker.shutdownNow(); // interrupts a wait in progress
@@ -131,41 +134,47 @@ public class WakeActivity extends Activity {
     }
 
     private void startRun() {
-        String base = prefs.bridgeUrl();
-        String token = prefs.token();
-        if (base.isEmpty() || token.isEmpty() || !BridgeClient.isAllowedBase(base)) {
-            showProblem("Set the PC address and token in Settings first.");
+        for (PcLink old : links) {
+            old.cancel();
+        }
+        links.clear();
+        final List<PcPlanner.Candidate> candidates = new ArrayList<>();
+        for (Computer computer : prefs.computers()) {
+            PcLink link = new PcLink(getApplicationContext(), computer);
+            links.add(link);
+            candidates.add(new PcPlanner.Candidate(computer.name, link, link.haveMac()));
+        }
+        if (candidates.isEmpty()) {
+            showProblem("No computers yet. Open Settings and add one.");
             return;
         }
-        link = new PcLink(getApplicationContext(), base, token, WakeOnLan.parseMac(prefs.pcMac()));
         running = true;
         showWorking("Looking for your PC...");
-        final PcLink thisRun = link;
         worker.execute(() -> {
-            PcStarter.Outcome outcome = PcStarter.run(thisRun, thisRun.haveMac(), step -> ui.post(() -> {
+            PcPlanner.Result result = PcPlanner.run(candidates, step -> ui.post(() -> {
                 if (!destroyed && running) {
                     status.setText(step);
                 }
             }));
-            ui.post(() -> finishRun(outcome));
+            ui.post(() -> finishRun(result));
         });
     }
 
-    private void finishRun(PcStarter.Outcome outcome) {
+    private void finishRun(PcPlanner.Result result) {
         running = false;
-        if (destroyed || outcome.cancelled) {
+        if (destroyed || result.cancelled) {
             return;
         }
-        if (!outcome.ok) {
-            showProblem(outcome.message);
+        if (!result.ok) {
+            showProblem(result.message);
             return;
         }
-        boolean already = "already-running".equals(outcome.state);
         if (prefs.openClaudeWhenReady() && visible && openClaude()) {
             finish();
             return;
         }
-        showDone(already ? "Claude was already running on your PC." : "Claude is running on your PC.");
+        showDone(("already-running".equals(result.state) ? "Claude was already running on " : "Claude is running on ")
+                + result.computer + ".");
     }
 
     // ---------- What the screen shows ----------

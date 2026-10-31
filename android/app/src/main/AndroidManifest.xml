@@ -11,8 +11,9 @@
         <package android:name="com.anthropic.claude" />
     </queries>
 
-    <!-- Cleartext is allowed only because the PC program speaks plain HTTP inside the encrypted tailnet.
-         BridgeClient refuses any http:// address that is not a tailnet or loopback address. -->
+    <!-- Cleartext is allowed only because the PC program speaks plain HTTP: inside the encrypted tailnet, and on
+         the home network, where requests are signed and the secret itself is never sent. Address.isAllowedBase
+         refuses any other http:// address. -->
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_pc_shortcut"
