@@ -135,8 +135,7 @@ If a short name like `njk-laptop` does not work on your phone, use the full name
 * The program starts when you sign in to Windows. A computer that is fully shut down will wake up, but sits at
   the sign-in screen until it is signed in (turn on automatic sign-in if you want that). Sleep and hibernate
   keep you signed in, so they work.
-* Remote Control only works while the computer is awake. To stop it falling asleep, set Windows to never sleep
-  while plugged in.
+* Claude only works while the computer is awake. See "Stopping the computer sleeping by itself" below.
 * The button never opens a second copy: if the Claude app is already open (or `claude remote-control` is already
   running), it says so and does nothing more.
 * **The home-network fallback** needs: the phone on that Wi-Fi, Windows calling that network Private, and the
@@ -155,6 +154,34 @@ If a short name like `njk-laptop` does not work on your phone, use the full name
   This app targets Android 15, so it keeps working as is. If it is ever moved to Android 17, add the
   `ACCESS_LOCAL_NETWORK` permission and ask for it before the first wake-up or home-network request (see
   `WakeSender.java`).
+
+## Stopping the computer sleeping by itself
+
+The simplest answer is Windows' own settings. Open PowerShell **as Administrator** (right-click Start, then Windows
+PowerShell (Admin)) and run:
+
+```
+powercfg /change standby-timeout-ac 0
+powercfg /change standby-timeout-dc 0
+powercfg /change hibernate-timeout-ac 0
+powercfg /change hibernate-timeout-dc 0
+powercfg /setacvalueindex SCHEME_CURRENT SUB_SLEEP UNATTENDSLEEP 0
+powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP UNATTENDSLEEP 0
+powercfg /setactive SCHEME_CURRENT
+```
+
+That turns off "sleep after" and "hibernate after" (plugged in and on battery), and "unattended sleep": the timer
+that sends a computer back to sleep about two minutes after it was woken with nobody using it. You can do the first
+two in Settings, System, Power & sleep, and set Sleep to Never. To check, run `powercfg /q SCHEME_CURRENT SUB_SLEEP`:
+the sleep, hibernate and unattended entries should all show `0x00000000`. To undo, change them back in Settings, or
+run `powercfg -restoredefaultschemes` (it resets all power settings to Windows' defaults).
+
+What this does **not** stop: the power button, choosing Sleep from the menu, a flat battery (a laptop that runs
+completely flat still hibernates, which is good), and Windows update restarts. Closing the lid is yours, not
+automatic, so it still sleeps a laptop; to make the lid do nothing while plugged in, also run
+`powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0` and `powercfg /setactive SCHEME_CURRENT`. A
+laptop that never sleeps on battery runs down until it hibernates, so keep it plugged in. If a maker's utility
+changes your power plan, it may start sleeping again: run the commands again.
 
 ## How it stays safe
 
