@@ -30,9 +30,7 @@ $user = (Get-CimInstance Win32_ComputerSystem).UserName
 if (-not $user) {
     throw 'Nobody is signed in at the screen. Sign in as the normal user, then run this again.'
 }
-$sid = (New-Object System.Security.Principal.NTAccount($user)).Translate([System.Security.Principal.SecurityIdentifier]).Value
-$profilePath = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid }).LocalPath
-$dataDir = Join-Path $profilePath 'AppData\Local\jarvis-assist'
+$dataDir = Join-Path $bridgeDir 'data'
 Write-Host "Setting up the bridge for: $user"
 
 # Stop any earlier copy (for example one set up for the wrong account) so the port is free.
