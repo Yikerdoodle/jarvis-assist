@@ -167,21 +167,27 @@ powercfg /change hibernate-timeout-ac 0
 powercfg /change hibernate-timeout-dc 0
 powercfg /setacvalueindex SCHEME_CURRENT SUB_SLEEP UNATTENDSLEEP 0
 powercfg /setdcvalueindex SCHEME_CURRENT SUB_SLEEP UNATTENDSLEEP 0
+powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
 powercfg /setactive SCHEME_CURRENT
 ```
 
-That turns off "sleep after" and "hibernate after" (plugged in and on battery), and "unattended sleep": the timer
-that sends a computer back to sleep about two minutes after it was woken with nobody using it. You can do the first
-two in Settings, System, Power & sleep, and set Sleep to Never. To check, run `powercfg /q SCHEME_CURRENT SUB_SLEEP`:
-the sleep, hibernate and unattended entries should all show `0x00000000`. To undo, change them back in Settings, or
-run `powercfg -restoredefaultschemes` (it resets all power settings to Windows' defaults).
+That turns off "sleep after" and "hibernate after" (plugged in and on battery), "unattended sleep" (the timer that
+sends a computer back to sleep about two minutes after it was woken with nobody using it), and makes **closing the lid
+do nothing** (no sleep, hibernate or shut down), plugged in or not. You can do the first two in Settings, System,
+Power & sleep, and set Sleep to Never.
+
+To check, run these three. `powercfg /q SCHEME_CURRENT SUB_SLEEP`: "Sleep after" and "Hibernate after" should show
+`0x00000000`. `powercfg /qh SCHEME_CURRENT SUB_SLEEP`: the `h` also lists hidden settings, so this is where the
+"System unattended sleep timeout" entry appears (it does not appear in the plain `/q` list). `powercfg /q
+SCHEME_CURRENT SUB_BUTTONS`: "Lid close action" should show `0x00000000` (do nothing). To undo, change them back in
+Settings, or run `powercfg -restoredefaultschemes` (it resets all power settings to Windows' defaults).
 
 What this does **not** stop: the power button, choosing Sleep from the menu, a flat battery (a laptop that runs
-completely flat still hibernates, which is good), and Windows update restarts. Closing the lid is yours, not
-automatic, so it still sleeps a laptop; to make the lid do nothing while plugged in, also run
-`powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0` and `powercfg /setactive SCHEME_CURRENT`. A
-laptop that never sleeps on battery runs down until it hibernates, so keep it plugged in. If a maker's utility
-changes your power plan, it may start sleeping again: run the commands again.
+completely flat still hibernates, which is good), and Windows update restarts. A laptop with its lid closed has
+almost no airflow, so use it on a desk, never in a bag, and keep it plugged in: a laptop that never sleeps on
+battery runs down until it hibernates. If a maker's utility changes your power plan, it may start sleeping again:
+run the commands again.
 
 ## How it stays safe
 
