@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.graphics.Insets;
+import android.net.ConnectivityManager;
+import android.net.NetworkCapabilities;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -13,6 +15,7 @@ import android.speech.tts.Voice;
 import android.text.InputType;
 import android.view.View;
 import android.view.WindowInsets;
+import android.view.WindowManager;
 import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
@@ -26,6 +29,7 @@ import android.widget.TextView;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -37,6 +41,8 @@ public class SettingsActivity extends Activity {
     private EditText url;
     private EditText token;
     private TextView result;
+    private final NanoEngine nano = new NanoEngine();
+    private TextView nanoStatus;
 
     private TextToSpeech tts;
     private boolean ttsReady;
@@ -88,6 +94,18 @@ public class SettingsActivity extends Activity {
 
         result = label("");
         root.addView(result);
+
+        root.addView(label("\nOn-device model (Gemini Nano, from Google)"));
+        nanoStatus = label("Checking...");
+        root.addView(nanoStatus);
+        Button nanoDownload = new Button(this);
+        nanoDownload.setText("Download Gemini Nano (Wi-Fi only)");
+        nanoDownload.setOnClickListener(v -> startNanoDownload());
+        root.addView(nanoDownload);
+        Button nanoCheck = new Button(this);
+        nanoCheck.setText("Check again");
+        nanoCheck.setOnClickListener(v -> checkNano());
+        root.addView(nanoCheck);
 
         root.addView(label("\nSpoken replies"));
         voiceStatus = label("Loading voices...");
@@ -160,11 +178,55 @@ public class SettingsActivity extends Activity {
 
         setContentView(scroll);
         startTts();
+        checkNano();
+    }
+
+    // ---------- On-device model ----------
+
+    private void checkNano() {
+        nano.checkStatus((text, state) -> ui.post(() -> nanoStatus.setText(text)));
+    }
+
+    /** Only runs when the owner taps the button, and only on an unmetered (Wi-Fi) connection. */
+    private void startNanoDownload() {
+        ConnectivityManager cm = getSystemService(ConnectivityManager.class);
+        NetworkCapabilities caps = cm.getNetworkCapabilities(cm.getActiveNetwork());
+        if (caps == null || !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)) {
+            nanoStatus.setText("You are on mobile data or offline. Connect to Wi-Fi first, then tap again.");
+            return;
+        }
+        nanoStatus.setText("Starting the download from Google...");
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); // keep the screen on while it runs
+        nano.download(new NanoEngine.DownloadListener() {
+            @Override
+            public void onProgress(long bytes) {
+                ui.post(() -> nanoStatus.setText(String.format(Locale.ROOT,
+                        "Downloading Gemini Nano: %.0f MB so far. Keep this screen open.", bytes / 1048576.0)));
+            }
+
+            @Override
+            public void onDone() {
+                ui.post(() -> {
+                    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    nanoStatus.setText("Downloaded. Gemini Nano is ready.");
+                });
+            }
+
+            @Override
+            public void onError(String message) {
+                ui.post(() -> {
+                    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    nanoStatus.setText("Download problem: " + message);
+                });
+            }
+        });
     }
 
     @Override
     protected void onDestroy() {
         probe.shutdownNow();
+        nano.stopDownload();
+        nano.close();
         if (tts != null) {
             tts.stop();
             tts.shutdown();

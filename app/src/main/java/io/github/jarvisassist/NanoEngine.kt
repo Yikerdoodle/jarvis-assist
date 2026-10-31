@@ -1,6 +1,7 @@
 package io.github.jarvisassist
 
 import android.os.SystemClock
+import com.google.mlkit.genai.common.DownloadStatus
 import com.google.mlkit.genai.common.FeatureStatus
 import com.google.mlkit.genai.prompt.Generation
 import com.google.mlkit.genai.prompt.GenerativeModel
@@ -30,13 +31,73 @@ class NanoEngine {
         fun onError(message: String)
     }
 
+    interface StatusListener {
+        /** [state]: 3 = ready, 2 = downloading, 1 = needs a download, 0 = unavailable, -1 = could not check. */
+        fun onStatus(text: String, state: Int)
+    }
+
+    interface DownloadListener {
+        fun onProgress(bytes: Long)
+        fun onDone()
+        fun onError(message: String)
+    }
+
     /** Timings for the benchmark line: model load, time to the first word, total time, and the answer's length. */
     data class Stats(val loadMs: Long, val firstTokenMs: Long, val totalMs: Long, val words: Int)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
     private var model: GenerativeModel? = null
+    private var downloadJob: Job? = null
     private var warmedUp = false
+
+    /** Asks AICore whether Gemini Nano is on the phone. Never downloads anything. */
+    fun checkStatus(listener: StatusListener) {
+        scope.launch {
+            try {
+                val m = model ?: Generation.getClient().also { model = it }
+                when (val s = m.checkStatus()) {
+                    FeatureStatus.AVAILABLE -> listener.onStatus("Ready: Gemini Nano is on this phone.", 3)
+                    FeatureStatus.DOWNLOADING -> listener.onStatus("Gemini Nano is downloading.", 2)
+                    FeatureStatus.DOWNLOADABLE -> listener.onStatus("Not on this phone yet. It needs a download from Google.", 1)
+                    FeatureStatus.UNAVAILABLE -> listener.onStatus("Gemini Nano is not available on this phone.", 0)
+                    else -> listener.onStatus("Gemini Nano status $s.", -1)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                listener.onStatus(explain(e), -1)
+            }
+        }
+    }
+
+    /** Starts the download of Gemini Nano. Only call this from an explicit tap by the owner, and on Wi-Fi. */
+    fun download(listener: DownloadListener) {
+        downloadJob?.cancel()
+        downloadJob = scope.launch {
+            try {
+                val m = model ?: Generation.getClient().also { model = it }
+                m.download().collect { status ->
+                    when (status) {
+                        is DownloadStatus.DownloadStarted -> listener.onProgress(0)
+                        is DownloadStatus.DownloadProgress -> listener.onProgress(status.totalBytesDownloaded)
+                        is DownloadStatus.DownloadCompleted -> listener.onDone()
+                        is DownloadStatus.DownloadFailed -> listener.onError(status.e.message ?: "The download failed.")
+                        else -> {}
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                listener.onError(explain(e))
+            }
+        }
+    }
+
+    /** Stops watching the download. Google's service may keep downloading in the background. */
+    fun stopDownload() {
+        downloadJob?.cancel()
+    }
 
     /** [past] is earlier turns as plain lines, for example "Owner: hello" and "Jarvis: hi there". */
     fun ask(past: List<String>, text: String, listener: Listener) {
@@ -107,8 +168,8 @@ class NanoEngine {
 
     private fun describe(status: Int): String = when (status) {
         FeatureStatus.UNAVAILABLE -> "Gemini Nano is not available on this phone."
-        FeatureStatus.DOWNLOADABLE -> "Gemini Nano is not on the phone yet and needs a download first. " +
-            "I have not started one; ask me to when you are ready."
+        FeatureStatus.DOWNLOADABLE -> "Gemini Nano is not on the phone yet. Open Settings and tap " +
+            "\"Download Gemini Nano\" (Wi-Fi only). Nothing downloads until you do."
         FeatureStatus.DOWNLOADING -> "Gemini Nano is still downloading. Try again later."
         else -> "Gemini Nano is not ready (status $status)."
     }
