@@ -181,7 +181,7 @@ To check, run these three. `powercfg /q SCHEME_CURRENT SUB_SLEEP`: "Sleep after"
 `0x00000000`. `powercfg /qh SCHEME_CURRENT SUB_SLEEP`: the `h` also lists hidden settings, so this is where the
 "System unattended sleep timeout" entry appears (it does not appear in the plain `/q` list). `powercfg /q
 SCHEME_CURRENT SUB_BUTTONS`: "Lid close action" should show `0x00000000` (do nothing). If that line is missing, Windows does not
-see a lid on this computer (a desktop, for example) and hides the setting; `powercfg /qh SCHEME_CURRENT SUB_BUTTONS`
+report a lid on this computer (a desktop, or a laptop whose firmware does not announce it) and hides the setting; `powercfg /qh SCHEME_CURRENT SUB_BUTTONS`
 shows it anyway. To undo, change them back in
 Settings, or run `powercfg -restoredefaultschemes` (it resets all power settings to Windows' defaults).
 
