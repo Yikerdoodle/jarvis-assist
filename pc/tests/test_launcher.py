@@ -9,7 +9,8 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from start_claude_pc.launcher import (LaunchError, RemoteLauncher, build_argv, is_remote_control,  # noqa: E402
-                                    load_config, local_cards, parse_cards_json, parse_getmac)
+                                    launch_desktop, load_config, local_cards, looks_installed,
+                                    parse_cards_json, parse_getmac)
 
 FAKE_RC = os.path.join(os.path.dirname(__file__), "fake_remote_control.py")
 TOKEN = "test-token-123"
@@ -27,7 +28,8 @@ class FakeProc:
 
 
 def config_for(folder, **extra):
-    base = {"dir": pathlib.Path(folder), "name": None, "spawn": None, "capacity": None, "permission_mode": None}
+    base = {"mode": "cli", "desktop_app_id": None, "dir": pathlib.Path(folder), "name": None, "spawn": None,
+            "capacity": None, "permission_mode": None}
     base.update(extra)
     return lambda: base
 
@@ -45,6 +47,14 @@ class ConfigTests(unittest.TestCase):
         cfg = load_config(self.path)
         self.assertEqual(cfg["dir"], pathlib.Path.home())
         self.assertIsNone(cfg["spawn"])
+        self.assertEqual((cfg["mode"], cfg["desktop_app_id"]), ("auto", None))
+
+    def test_mode_and_app_id(self):
+        self.write(json.dumps({"mode": "desktop", "desktop_app_id": " Claude_abc!Claude "}))
+        cfg = load_config(self.path)
+        self.assertEqual((cfg["mode"], cfg["desktop_app_id"]), ("desktop", "Claude_abc!Claude"))
+        self.write(json.dumps({"mode": "cli"}))
+        self.assertEqual(load_config(self.path)["mode"], "cli")
 
     def test_valid_file(self):
         self.write(json.dumps({"dir": self.tmp.name, "name": " My PC ", "spawn": "worktree", "capacity": 4,
@@ -68,6 +78,10 @@ class ConfigTests(unittest.TestCase):
             (json.dumps({"dir": self.tmp.name, "capacity": True}), "capacity"),
             (json.dumps({"dir": self.tmp.name, "permission_mode": "bypassPermissions"}), "permission_mode"),
             (json.dumps({"dir": self.tmp.name, "name": "x" * 61}), "name"),
+            (json.dumps({"mode": "gui"}), "mode"),
+            (json.dumps({"desktop_app_id": ""}), "desktop_app_id"),
+            (json.dumps({"desktop_app_id": "bad\nid"}), "desktop_app_id"),
+            (json.dumps({"desktop_app_id": 5}), "desktop_app_id"),
         ]
         for text, expected in bad:
             self.write(text)
@@ -233,6 +247,164 @@ class LauncherTests(unittest.TestCase):
         log.write_bytes(b"x" * 1_100_000)
         self.launcher(log_path=log).start()
         self.assertLess(log.stat().st_size, 1000)
+
+
+class DesktopModeTests(unittest.TestCase):
+    """Opening the Claude desktop app (the window you click on) instead of the claude command."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.cli_starts = []
+        self.desktop_calls = []
+
+    def launcher(self, mode="auto", desktop="launched", find=lambda: "claude", **extra):
+        def fake_desktop(app_id):
+            self.desktop_calls.append(app_id)
+            if isinstance(desktop, Exception):
+                raise desktop
+            return desktop.pop(0) if isinstance(desktop, list) else desktop
+
+        def popen(argv, **kwargs):
+            self.cli_starts.append(argv)
+            return FakeProc()
+
+        return RemoteLauncher(config=config_for(self.tmp.name, mode=mode, **extra), find=find,
+                              processes=lambda: [], popen=popen, startup_check=0.1, desktop=fake_desktop,
+                              desktop_probe=lambda: True, log_path=os.path.join(self.tmp.name, "rc.log"))
+
+    def test_desktop_mode_opens_the_app_and_never_the_command(self):
+        result = self.launcher(mode="desktop", desktop="launched").start()
+        self.assertEqual((result["state"], result["via"]), ("started", "desktop"))
+        self.assertEqual(self.cli_starts, [])
+
+    def test_an_app_that_is_already_open_is_reported_as_running(self):
+        result = self.launcher(mode="desktop", desktop="running").start()
+        self.assertEqual((result["state"], result["via"]), ("already-running", "desktop"))
+
+    def test_the_apps_id_from_launcher_json_is_passed_on(self):
+        self.launcher(mode="desktop", desktop_app_id="Claude_abc!Claude").start()
+        self.assertEqual(self.desktop_calls, ["Claude_abc!Claude"])
+
+    def test_desktop_mode_without_the_app_says_how_to_fix_it(self):
+        with self.assertRaises(LaunchError) as caught:
+            self.launcher(mode="desktop", desktop="not-installed").start()
+        self.assertEqual(caught.exception.status, 503)
+        self.assertIn("claude.com/download", str(caught.exception))
+        self.assertIn('"mode": "cli"', str(caught.exception))
+        self.assertEqual(self.cli_starts, [])
+
+    def test_an_app_that_will_not_open_is_reported(self):
+        for mode in ("desktop", "auto"):
+            with self.assertRaises(LaunchError, msg=mode) as caught:
+                self.launcher(mode=mode, desktop="not-started").start()
+            self.assertEqual(caught.exception.status, 502)
+            self.assertIn("did not open", str(caught.exception))
+        self.assertEqual(self.cli_starts, [], "an app that is installed but broken is not silently replaced")
+
+    def test_desktop_mode_reports_a_powershell_failure(self):
+        with self.assertRaises(LaunchError) as caught:
+            self.launcher(mode="desktop", desktop=RuntimeError("powershell failed")).start()
+        self.assertEqual(caught.exception.status, 502)
+        self.assertIn("powershell failed", str(caught.exception))
+
+    def test_auto_prefers_the_desktop_app(self):
+        result = self.launcher(mode="auto", desktop="launched").start()
+        self.assertEqual(result["via"], "desktop")
+        self.assertEqual(self.cli_starts, [])
+
+    def test_auto_falls_back_to_the_command_when_there_is_no_app(self):
+        result = self.launcher(mode="auto", desktop="not-installed").start()
+        self.assertEqual((result["state"], result["via"]), ("started", "cli"))
+        self.assertEqual(len(self.cli_starts), 1)
+
+    def test_auto_falls_back_to_the_command_when_powershell_fails(self):
+        result = self.launcher(mode="auto", desktop=RuntimeError("powershell failed")).start()
+        self.assertEqual(result["via"], "cli")
+
+    def test_auto_with_neither_explains_what_to_install(self):
+        with self.assertRaises(LaunchError) as caught:
+            self.launcher(mode="auto", desktop="not-installed", find=lambda: None).start()
+        self.assertEqual(caught.exception.status, 503)
+        self.assertIn("Neither the Claude desktop app nor the claude command", str(caught.exception))
+
+    def test_cli_mode_never_touches_the_app(self):
+        self.launcher(mode="cli", desktop="launched").start()
+        self.assertEqual(self.desktop_calls, [])
+        self.assertEqual(len(self.cli_starts), 1)
+
+    def test_two_quick_taps_open_the_app_once(self):
+        launcher = self.launcher(mode="desktop", desktop=["launched"] + ["running"] * 4)
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(launcher.start()["state"])) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sorted(results), ["already-running"] * 4 + ["started"])
+        self.assertEqual(len(self.desktop_calls), 5, "serialised: each tap asks in turn, only one actually opens it")
+
+    def test_health_counts_the_app_as_available(self):
+        launcher = RemoteLauncher(find=lambda: None, desktop_probe=lambda: True)
+        self.assertEqual(launcher.status(), {"available": True})
+        self.assertEqual(RemoteLauncher(find=lambda: None, desktop_probe=lambda: False).status(),
+                         {"available": False})
+
+
+class DesktopHelperTests(unittest.TestCase):
+    class Done:
+        def __init__(self, out="", err=""):
+            self.stdout, self.stderr = out, err
+
+    def run_as_windows(self, fn, *args, **kwargs):
+        real = os.name
+        os.name = "nt"  # pretend: these helpers only run their commands on Windows
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            os.name = real
+
+    def test_every_answer_the_script_can_give(self):
+        for word, expected in (("RUNNING", "running"), ("LAUNCHED", "launched"), ("NOT_INSTALLED", "not-installed"),
+                               ("NOT_STARTED", "not-started"), ("launched\r\n", "launched")):
+            def run(argv, **kwargs):
+                return self.Done(out="some noise\n" + word + "\n")
+            self.assertEqual(self.run_as_windows(launch_desktop, None, run=run), expected, word)
+
+    def test_the_app_id_travels_in_the_environment_not_in_the_script(self):
+        seen = {}
+
+        def run(argv, **kwargs):
+            seen["argv"], seen["env"] = argv, kwargs["env"]
+            return self.Done(out="RUNNING")
+        self.run_as_windows(launch_desktop, "Claude_abc!Claude", run=run)
+        self.assertEqual(seen["env"]["START_CLAUDE_APP_ID"], "Claude_abc!Claude")
+        self.assertNotIn("Claude_abc!Claude", " ".join(seen["argv"]))
+        self.assertEqual(seen["argv"][0], "powershell.exe")
+
+    def test_no_answer_or_an_error_raises(self):
+        for done in (self.Done(out="", err="boom"), self.Done(out="gibberish\n"), self.Done()):
+            with self.assertRaises(RuntimeError):
+                self.run_as_windows(launch_desktop, None, run=lambda argv, **kw: done)
+
+    def test_not_windows_means_not_installed_and_runs_nothing(self):
+        if os.name != "nt":
+            self.assertEqual(launch_desktop(None, run=lambda *a, **k: 1 / 0), "not-installed")
+            self.assertFalse(looks_installed())
+
+    def test_looks_installed_finds_either_kind_of_install(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.environ.get("LOCALAPPDATA")
+            self.addCleanup(lambda: os.environ.pop("LOCALAPPDATA", None) if old is None
+                            else os.environ.__setitem__("LOCALAPPDATA", old))
+            os.environ["LOCALAPPDATA"] = tmp
+            self.assertFalse(self.run_as_windows(looks_installed))
+            os.makedirs(os.path.join(tmp, "Packages", "Claude_pzs8sxrjxfjjc"))
+            self.assertTrue(self.run_as_windows(looks_installed))
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["LOCALAPPDATA"] = tmp
+            os.makedirs(os.path.join(tmp, "AnthropicClaude"))
+            self.assertTrue(self.run_as_windows(looks_installed))
 
 
 class GetmacTests(unittest.TestCase):

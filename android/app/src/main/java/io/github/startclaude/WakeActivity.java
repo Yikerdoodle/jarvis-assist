@@ -197,7 +197,7 @@ public class WakeActivity extends Activity {
 
     private void showDone(String text) {
         spinner.setVisibility(View.GONE);
-        status.setText(text + " Open Claude and look for your PC under Code.");
+        status.setText(text + " Open the Claude app to carry on.");
         settings.setVisibility(View.GONE);
         action.setText("Open Claude");
         onAction = () -> {

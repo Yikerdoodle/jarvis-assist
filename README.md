@@ -4,8 +4,9 @@ A button on your Android home screen. One tap goes down your list of computers, 
 first one that works:
 
 1. **wakes it** if it is asleep (when you are on your home Wi-Fi),
-2. **starts Claude's Remote Control** on it, unless Claude is already running there, and
-3. **opens the Claude app**, so you can start as many sessions as you like. They all run on that computer.
+2. **gets Claude going** on it: it opens the **Claude desktop app** (or starts Claude's Remote Control with the
+   `claude` command), unless that is already running, and
+3. **opens the Claude app** on your phone, so you can carry on from there. The sessions run on that computer.
 
 You never have to walk over to the PC. Reach is by **Tailscale** first, and by your **home network** as a
 fallback when Tailscale is not available.
@@ -31,45 +32,75 @@ This is a small stand-alone project. It has nothing to do with the rest of the r
 
 ## Set up each computer (once, Windows)
 
-You need Python 3.10 or newer, Tailscale (signed in), and the `claude` command logged in.
+You need Python 3.10 or newer, Tailscale (signed in), and Claude in **one** of two forms:
 
-1. **Trust a folder once, by hand.** Open a terminal in the folder you want your sessions to work in, type
-   `claude`, log in if asked, and answer **yes** to "trust this folder". The button cannot answer that question
-   for you.
-2. **Install the program.** Open PowerShell **as Administrator** in this folder and run:
+* **The Claude desktop app (the window you click on). This is the default.** Install it from
+  [claude.com/download](https://claude.com/download) and sign in. Then, inside the app, open Settings, then Code
+  (or Claude Code), and turn on **Connect new sessions to Remote Control**. To start *new* sessions from your
+  phone, pair your phone with the desktop app for **Dispatch** (it needs a Pro, Max or Ultra plan; the steps are in
+  Anthropic's [Dispatch help article](https://support.claude.com/en/articles/13947068)). The app has to be
+  **running** for your phone to reach it, and that is what the button takes care of: it wakes the computer and
+  opens the app.
+* **Or the `claude` command**, logged in. See "Using the `claude` command instead" below.
+
+Then:
+
+1. **Install the program.** Open PowerShell **as Administrator** in this folder and run:
    ```
    pc\windows\install.ps1
    ```
    It adds two firewall rules and a scheduled task that starts the program hidden whenever you sign in to
-   Windows. It is safe to run again. `pc\windows\uninstall.ps1` undoes it. The rules:
+   Windows (as you, so it can open the app on your screen). It is safe to run again. `pc\windows\uninstall.ps1`
+   undoes it. The rules:
    * **Tailscale:** devices on your Tailscale network may connect (TCP 8788).
    * **Home network:** devices on your home network may connect, but **only while Windows calls that network
      "Private"**. Set your home Wi-Fi or Ethernet to Private in Windows settings (Network & internet, then the
      connection's properties). On a "Public" network, such as a cafe or hotel, this stays closed. Delete this
      second rule, or set `START_CLAUDE_NO_LAN=1`, if you only want Tailscale.
-3. **Check it.** On that computer, open `http://127.0.0.1:8788/v1/health` in a browser. You should see
-   `"ok": true`, the computer's name, and `"available": true` (it found `claude`).
-4. **Optional: choose the folder and options.** Without a file, sessions run in your home folder. To change
-   that, create `pc\data\launcher.json`. Every line is optional:
+2. **Check it.** On that computer, open `http://127.0.0.1:8788/v1/health` in a browser. You should see
+   `"ok": true`, the computer's name, and `"available": true` (it found the Claude app or the `claude` command).
+3. **Optional: `pc\data\launcher.json`.** Without a file, everything is automatic. Every line is optional:
    ```json
    {
-     "dir": "C:\\Users\\you\\code",
-     "name": "My PC",
-     "spawn": "worktree",
-     "capacity": 8,
-     "permission_mode": "default"
+     "mode": "auto",
+     "desktop_app_id": "Claude_pzs8sxrjxfjjc!Claude"
    }
    ```
-   * `spawn`: `same-dir` (sessions share the folder) or `worktree` (each gets its own copy; needs a git folder).
-   * `permission_mode`: `default`, `acceptEdits`, `auto`, `dontAsk` or `plan`. `bypassPermissions` is
-     deliberately not allowed here: a tap on a phone should never start sessions that run unchecked.
-5. **Optional: let the computer be woken.** In Device Manager, open the network card, then Power Management,
+   * `mode`: `auto` (the desktop app if it is installed, otherwise the `claude` command), `desktop`, or `cli`.
+   * `desktop_app_id`: only if the button says it cannot find the Claude app. In PowerShell run
+     `Get-StartApps | Where-Object Name -like '*Claude*'` and copy the `AppID` of the Claude app.
+4. **Optional: let the computer be woken.** In Device Manager, open the network card, then Power Management,
    and tick "Allow this device to wake the computer" and "Only allow a magic packet to wake the computer". Also
    switch on Wake on LAN in the BIOS/UEFI (it may be called "Power on by PCI-E"). Test from **sleep** first. If
-   waking from a full shutdown fails, turn off Windows "Fast startup".
+   waking from a full shutdown fails, turn off Windows "Fast startup". A laptop is much harder to wake than a
+   desktop PC: it usually needs to be on a cable or dock, and many laptops cannot be woken over Wi-Fi at all.
 
 The name the phone shows is the Windows computer name (for example `NJK-LAPTOP`). Set `START_CLAUDE_NAME` to
-change it.
+change it. Windows only applies a rename after a restart, so restart after renaming the computer.
+
+### Using the `claude` command instead
+
+Install it ([setup guide](https://code.claude.com/docs/en/setup)), log in, and trust a folder once, by hand: open a
+terminal in the folder you want sessions to work in, type `claude`, and answer **yes** to "trust this folder". Then
+set `"mode": "cli"` in `launcher.json` (or leave `auto` if the desktop app is not installed). The button then starts
+`claude remote-control` hidden, which keeps a server running from which your phone starts new sessions. These extra
+`launcher.json` lines apply only to this route:
+
+```json
+{
+  "mode": "cli",
+  "dir": "C:\\Users\\you\\code",
+  "name": "My PC",
+  "spawn": "worktree",
+  "capacity": 8,
+  "permission_mode": "default"
+}
+```
+
+* `dir`: the folder sessions work in (default: your home folder).
+* `spawn`: `same-dir` (sessions share the folder) or `worktree` (each gets its own copy; needs a git folder).
+* `permission_mode`: `default`, `acceptEdits`, `auto`, `dontAsk` or `plan`. `bypassPermissions` is
+  deliberately not allowed here: a tap on a phone should never start sessions that run unchecked.
 
 ## Set up the phone (once)
 
@@ -85,7 +116,7 @@ change it.
    Start Claude icon: "Start Claude on my PC" is in the menu, and you can drag it out.)
 
 Now tap the new button. A screen shows what is happening ("njk-laptop: Waking your PC... 12 s", "Starting
-Claude...") and then opens the Claude app. Look for the computer under **Code**.
+Claude...") and then opens the Claude app on your phone.
 
 **How the order works.** The button takes the list top to bottom. A computer that is awake is used at once. One
 that is asleep is woken and waited for (up to 2.5 minutes). One that cannot be reached or woken, for example
@@ -106,13 +137,14 @@ If a short name like `njk-laptop` does not work on your phone, use the full name
   keep you signed in, so they work.
 * Remote Control only works while the computer is awake. To stop it falling asleep, set Windows to never sleep
   while plugged in.
-* Do not also start `claude remote-control` by hand: the button sees it is running and does nothing.
+* The button never opens a second copy: if the Claude app is already open (or `claude remote-control` is already
+  running), it says so and does nothing more.
 * **The home-network fallback** needs: the phone on that Wi-Fi, Windows calling that network Private, and the
   home-network address the phone noted when it paired. If the computer's address changes (your router handed
   out a new one), tap **Add and pair** again over Tailscale, or give the computer a fixed address in your
   router. The phone's and the computer's clocks must agree to within a minute.
-* If the button says Claude stopped right after starting, the message includes what Claude said. The computer
-  keeps the full text in `pc\data\remote-control.log`. That file is whatever the `claude remote-control`
+* With the `claude` command: if the button says Claude stopped right after starting, the message includes what
+  Claude said. The computer keeps the full text in `pc\data\remote-control.log`. That file is whatever the `claude remote-control`
   command printed, so treat it as private. The program's own log is `pc\data\pc.log`; it records only what
   happened (which device asked, and the outcome), never your sessions.
 * **Updates:** the APK is signed with a throwaway key made by the build robot, so each build has a different

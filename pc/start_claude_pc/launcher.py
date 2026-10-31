@@ -1,14 +1,22 @@
-"""Start Claude's Remote Control on this PC, so the Claude app on the phone can start sessions here.
+"""Get Claude going on this PC, so the Claude app on the phone can carry on from here.
 
-`claude remote-control` is the official command: it keeps a small server running on this PC, and the Claude
-app (or claude.ai/code) lists the PC and starts new sessions on it. Claude and its tools run on this PC; the
-phone only shows them. This module starts that command hidden, once, when the phone asks.
+Two ways, chosen by "mode" in launcher.json:
+
+  desktop  open the Claude desktop app (the window you click on) if it is not already open. The app has to be
+           running for the phone to reach it: the phone talks to it through Remote Control or Dispatch, which
+           are switched on once inside the app.
+  cli      start `claude remote-control` hidden, with the official claude command: a small server that keeps
+           running, from which the phone starts new sessions.
+  auto     (the default) the desktop app if it is installed, otherwise the claude command.
+
+Claude and its tools always run on this PC; the phone only shows them.
 
 What a request may ask for is deliberately tiny: "start it". The folder and the options come from
 launcher.json on the PC, never from the request, so a request can never choose what runs or where.
 """
 
 import csv
+import glob
 import io
 import json
 import logging
@@ -28,11 +36,12 @@ NEW_GROUP = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
 
 STARTUP_CHECK_SECONDS = 4.0   # a start that is still alive after this long is treated as working
 LOG_LIMIT = 1_000_000         # the child's output file is started afresh once it passes this size
+MODES = ("auto", "desktop", "cli")
 SPAWN_MODES = ("same-dir", "worktree")
 # "bypassPermissions" is left out on purpose: sessions started by a tap on a phone should not run unchecked.
 # Anyone who really wants that can start `claude remote-control` by hand.
 PERMISSION_MODES = ("default", "acceptEdits", "auto", "dontAsk", "plan")
-CONFIG_KEYS = ("dir", "name", "spawn", "capacity", "permission_mode")
+CONFIG_KEYS = ("mode", "desktop_app_id", "dir", "name", "spawn", "capacity", "permission_mode")
 
 
 class LaunchError(Exception):
@@ -61,6 +70,14 @@ def load_config(path=None):
         raise LaunchError("launcher.json has settings this program does not know: " + ", ".join(unknown)
                           + ". Allowed: " + ", ".join(CONFIG_KEYS))
 
+    run_mode = raw.get("mode", "auto")
+    if run_mode not in MODES:
+        raise LaunchError(f'launcher.json "mode" must be one of: {", ".join(MODES)}')
+    app_id = raw.get("desktop_app_id")
+    if app_id is not None and (not isinstance(app_id, str) or not app_id.strip() or len(app_id) > 300
+                               or any(ord(ch) < 32 for ch in app_id)):
+        raise LaunchError('launcher.json "desktop_app_id" must be the Claude app\'s id from Get-StartApps')
+
     folder = pathlib.Path(os.path.expanduser(str(raw.get("dir") or pathlib.Path.home())))
     if not folder.is_dir():
         raise LaunchError(f"The folder in launcher.json does not exist on the PC: {folder}")
@@ -77,8 +94,8 @@ def load_config(path=None):
     name = raw.get("name")
     if name is not None and (not isinstance(name, str) or not name.strip() or len(name) > 60):
         raise LaunchError('launcher.json "name" must be 1 to 60 characters')
-    return {"dir": folder, "name": name.strip() if name else None, "spawn": spawn, "capacity": capacity,
-            "permission_mode": mode}
+    return {"mode": run_mode, "desktop_app_id": app_id.strip() if app_id else None, "dir": folder,
+            "name": name.strip() if name else None, "spawn": spawn, "capacity": capacity, "permission_mode": mode}
 
 
 def build_argv(prefix, config):
@@ -143,6 +160,55 @@ def list_processes():
     return found
 
 
+# ---------- The Claude desktop app ----------
+
+# Opens the Claude desktop app the way the Start menu does, unless it is already open, and waits up to ten
+# seconds for its window process. It prints one word: RUNNING, LAUNCHED, NOT_INSTALLED or NOT_STARTED.
+# "claude-code" is left out of the search on purpose: the desktop app carries a command-line claude.exe of its
+# own, which is not the app. The app's id (Start menu entry) can be given in START_CLAUDE_APP_ID.
+_DESKTOP_SCRIPT = (
+    "$ErrorActionPreference='SilentlyContinue'; "
+    "function ClaudeApp { Get-Process -Name Claude | Where-Object { -not ($_.Path -match 'claude-code') } }; "
+    "if (ClaudeApp) { 'RUNNING'; exit 0 }; "
+    "$id = $env:START_CLAUDE_APP_ID; "
+    "if (-not $id) { "
+    "$app = Get-StartApps | Where-Object { $_.Name -eq 'Claude' } | Select-Object -First 1; "
+    "if (-not $app) { $app = Get-StartApps | Where-Object { $_.Name -like 'Claude*' } | Select-Object -First 1 }; "
+    "if ($app) { $id = $app.AppID } }; "
+    "if (-not $id) { 'NOT_INSTALLED'; exit 0 }; "
+    "Start-Process explorer.exe -ArgumentList ('\"shell:AppsFolder\\' + $id + '\"'); "
+    "for ($i = 0; $i -lt 20; $i++) { Start-Sleep -Milliseconds 500; if (ClaudeApp) { 'LAUNCHED'; exit 0 } }; "
+    "'NOT_STARTED'"
+)
+_DESKTOP_ANSWERS = {"RUNNING": "running", "LAUNCHED": "launched", "NOT_INSTALLED": "not-installed",
+                    "NOT_STARTED": "not-started"}
+
+
+def launch_desktop(app_id=None, run=subprocess.run):
+    """Open the Claude desktop app if it is not open. Returns "running", "launched", "not-installed" or
+    "not-started". Windows only; elsewhere "not-installed". Raises if PowerShell itself fails."""
+    if os.name != "nt":
+        return "not-installed"
+    env = dict(os.environ)
+    env["START_CLAUDE_APP_ID"] = app_id or ""  # by environment, never pasted into the script
+    done = run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _DESKTOP_SCRIPT],
+               capture_output=True, text=True, errors="replace", timeout=40, creationflags=NO_WINDOW, env=env)
+    lines = (done.stdout or "").strip().splitlines()
+    answer = _DESKTOP_ANSWERS.get(lines[-1].strip().upper()) if lines else None
+    if answer is None:
+        raise RuntimeError((done.stderr or "").strip()[:200] or "PowerShell gave no answer")
+    return answer
+
+
+def looks_installed():
+    """A quick look, with no process started, for whether the Claude desktop app is on this computer."""
+    if os.name != "nt":
+        return False
+    local = os.environ.get("LOCALAPPDATA", "")
+    return bool(local) and (bool(glob.glob(os.path.join(local, "Packages", "Claude_*")))
+                            or os.path.isdir(os.path.join(local, "AnthropicClaude")))
+
+
 # ---------- The launcher ----------
 
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -150,7 +216,8 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 
 class RemoteLauncher:
     def __init__(self, config=load_config, find=find_claude, prefix=None, processes=list_processes,
-                 popen=subprocess.Popen, startup_check=STARTUP_CHECK_SECONDS, log_path=None):
+                 popen=subprocess.Popen, startup_check=STARTUP_CHECK_SECONDS, log_path=None,
+                 desktop=launch_desktop, desktop_probe=looks_installed):
         self._config = config
         self._find = find
         self._prefix = prefix          # tests start a fake command instead of the real claude
@@ -158,48 +225,84 @@ class RemoteLauncher:
         self._popen = popen
         self._startup_check = startup_check
         self._log_path = log_path
+        self._desktop = desktop        # opens the desktop app
+        self._desktop_probe = desktop_probe
         self._lock = threading.Lock()  # two quick taps must not start two copies
         self._proc = None
         self._log_offset = 0
 
     def status(self):
-        """Cheap enough for the health check: is there a claude command to start?"""
-        return {"available": bool(self._prefix or self._find())}
+        """Cheap enough for the health check: is there a desktop app or a claude command to start?"""
+        return {"available": bool(self._prefix or self._find() or self._desktop_probe())}
 
     def start(self):
-        """Start Remote Control unless it is already running. Returns {"state", "folder"}; raises LaunchError."""
+        """Get Claude going unless it already is. Returns {"state", "via", "folder"}; raises LaunchError."""
         with self._lock:
             config = self._config()
-            binary = None if self._prefix else self._find()
-            prefix = self._prefix or ([binary] if binary else None)
-            if not prefix:
-                raise LaunchError("The claude command was not found on the PC.", 503)
-            if self._running_already():
-                return {"state": "already-running", "folder": self._folder_name(config)}
+            if config["mode"] in ("auto", "desktop"):
+                result = self._start_desktop(config)
+                if result is not None:
+                    return result
+            return self._start_cli(config)
 
-            log_file = self._open_log()
-            try:
-                self._proc = self._popen(
-                    build_argv(prefix, config), cwd=str(config["dir"]), env=clean_env(os.environ),
-                    stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
-                    creationflags=NO_WINDOW | NEW_GROUP, **({} if os.name == "nt" else {"start_new_session": True}))
-            except OSError as exc:
-                raise LaunchError(f"Could not start Claude on the PC: {exc}", 502)
-            finally:
-                log_file.close()  # the child keeps its own copy of the handle
+    def _start_desktop(self, config):
+        """Open the Claude desktop app. None means "not possible here, try the claude command" (auto mode only)."""
+        strict = config["mode"] == "desktop"
+        try:
+            state = self._desktop(config["desktop_app_id"])
+        except Exception as exc:
+            LOG.warning("could not open the Claude desktop app: %s", exc)
+            if strict:
+                raise LaunchError(f"Could not open the Claude desktop app: {exc}", 502)
+            return None
+        if state == "running":
+            return {"state": "already-running", "via": "desktop", "folder": ""}
+        if state == "launched":
+            LOG.info("opened the Claude desktop app")
+            return {"state": "started", "via": "desktop", "folder": ""}
+        if state == "not-started":
+            raise LaunchError("The Claude desktop app did not open within 10 seconds. Open it by hand once, "
+                              "check that it starts, then try again.", 502)
+        if strict:
+            raise LaunchError('The Claude desktop app was not found on this computer. Install it from '
+                              'claude.com/download, or put {"mode": "cli"} in launcher.json to use the claude '
+                              'command instead.', 503)
+        return None
 
-            deadline = time.monotonic() + self._startup_check
-            while time.monotonic() < deadline and self._proc.poll() is None:
-                time.sleep(0.1)
-            if self._proc.poll() is not None:
-                tail = self._log_tail()
-                LOG.warning("remote-control exited at once, code=%s", self._proc.returncode)
-                raise LaunchError(
-                    "Claude stopped right after starting." + (f" It said: {tail}" if tail else "")
-                    + " If it is asking whether to trust the folder, run `claude` once in that folder on the PC.",
-                    502)
-            LOG.info("remote-control started pid=%s", self._proc.pid)
-            return {"state": "started", "folder": self._folder_name(config)}
+    def _start_cli(self, config):
+        binary = None if self._prefix else self._find()
+        prefix = self._prefix or ([binary] if binary else None)
+        if not prefix:
+            if config["mode"] == "auto":
+                raise LaunchError("Neither the Claude desktop app nor the claude command was found on this "
+                                  "computer. Install the desktop app from claude.com/download.", 503)
+            raise LaunchError("The claude command was not found on the PC.", 503)
+        if self._running_already():
+            return {"state": "already-running", "via": "cli", "folder": self._folder_name(config)}
+
+        log_file = self._open_log()
+        try:
+            self._proc = self._popen(
+                build_argv(prefix, config), cwd=str(config["dir"]), env=clean_env(os.environ),
+                stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT,
+                creationflags=NO_WINDOW | NEW_GROUP, **({} if os.name == "nt" else {"start_new_session": True}))
+        except OSError as exc:
+            raise LaunchError(f"Could not start Claude on the PC: {exc}", 502)
+        finally:
+            log_file.close()  # the child keeps its own copy of the handle
+
+        deadline = time.monotonic() + self._startup_check
+        while time.monotonic() < deadline and self._proc.poll() is None:
+            time.sleep(0.1)
+        if self._proc.poll() is not None:
+            tail = self._log_tail()
+            LOG.warning("remote-control exited at once, code=%s", self._proc.returncode)
+            raise LaunchError(
+                "Claude stopped right after starting." + (f" It said: {tail}" if tail else "")
+                + " If it is asking whether to trust the folder, run `claude` once in that folder on the PC.",
+                502)
+        LOG.info("remote-control started pid=%s", self._proc.pid)
+        return {"state": "started", "via": "cli", "folder": self._folder_name(config)}
 
     def _running_already(self):
         if self._proc is not None and self._proc.poll() is None:

@@ -164,7 +164,8 @@ class WhoMayDoWhatTests(unittest.TestCase):
             return Alive()
 
         cls.tmp = tempfile.TemporaryDirectory()
-        launcher = RemoteLauncher(config=lambda: {"dir": __import__("pathlib").Path(cls.tmp.name), "name": None,
+        launcher = RemoteLauncher(config=lambda: {"mode": "cli", "desktop_app_id": None,
+                                                   "dir": __import__("pathlib").Path(cls.tmp.name), "name": None,
                                                    "spawn": None, "capacity": None, "permission_mode": None},
                                   find=lambda: "claude", processes=lambda: [], popen=popen, startup_check=0.05,
                                   log_path=os.path.join(cls.tmp.name, "rc.log"))
