@@ -81,6 +81,26 @@ class FindClaudeTests(unittest.TestCase):
             self.assertIsNone(self._find(local))
 
 
+class EffortTests(unittest.TestCase):
+    def _argv(self, engine, model, effort):
+        from unittest import mock
+        from jarvis_bridge import engines
+        with mock.patch.object(engines, "find_claude", return_value="claude.exe"):
+            return engine._argv(model, effort)
+
+    def test_valid_effort_is_passed_on(self):
+        argv = self._argv(ClaudeCliEngine(), "sonnet", "medium")
+        self.assertEqual(argv[argv.index("--effort") + 1], "medium")
+
+    def test_unknown_or_missing_effort_is_left_out(self):
+        self.assertNotIn("--effort", self._argv(ClaudeCliEngine(), "sonnet", "extreme"))
+        self.assertNotIn("--effort", self._argv(ClaudeCliEngine(), "sonnet", None))
+
+    def test_default_effort_comes_from_the_setting_only_when_valid(self):
+        self.assertEqual(ClaudeCliEngine(default_effort="high").default_effort, "high")
+        self.assertIsNone(ClaudeCliEngine(default_effort="turbo").default_effort)
+
+
 class AuthTests(unittest.TestCase):
     def test_token(self):
         self.assertTrue(token_ok("Bearer abc", "abc"))

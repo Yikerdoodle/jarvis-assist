@@ -13,6 +13,8 @@ from .auth import app_dir
 from .prompting import SYSTEM_PROMPT, build_prompt
 
 ALLOWED_CLAUDE_MODELS = {"haiku", "sonnet", "opus", "fable"}
+# How hard Claude thinks (the `claude --effort` option). Higher is smarter but uses more of the plan's limits.
+ALLOWED_CLAUDE_EFFORT = {"low", "medium", "high", "xhigh", "max"}
 # Never let a stray key make the CLI bill the API instead of using the subscription login.
 STRIPPED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
                 "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
@@ -96,20 +98,25 @@ class ClaudeCliEngine:
     """Claude through the official `claude` command, using your normal subscription login."""
     name = "claude"
 
-    def __init__(self, command=None, default_model=None):
+    def __init__(self, command=None, default_model=None, default_effort=None):
         self.command = command  # list of leading argv items; tests can substitute a fake
         self.default_model = default_model or os.environ.get("JARVIS_CLAUDE_MODEL", "sonnet")
+        chosen = default_effort or os.environ.get("JARVIS_CLAUDE_EFFORT")
+        self.default_effort = chosen if chosen in ALLOWED_CLAUDE_EFFORT else None  # None = the command's own default
 
-    def _argv(self, model):
+    def _argv(self, model, effort=None):
         if self.command:
             return list(self.command)
         binary = find_claude()
         if not binary:
             return None
-        return [binary, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+        argv = [binary, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
                 "--tools", "", "--no-session-persistence", "--disable-slash-commands",
                 "--strict-mcp-config", "--setting-sources", "",
                 "--model", model, "--system-prompt", SYSTEM_PROMPT]
+        if effort in ALLOWED_CLAUDE_EFFORT:
+            argv += ["--effort", effort]
+        return argv
 
     def status(self):
         if self.command:
@@ -119,7 +126,8 @@ class ClaudeCliEngine:
 
     def stream(self, req, cancel):
         model = req.get("model") if req.get("model") in ALLOWED_CLAUDE_MODELS else self.default_model
-        argv = self._argv(model)
+        effort = req.get("effort") if req.get("effort") in ALLOWED_CLAUDE_EFFORT else self.default_effort
+        argv = self._argv(model, effort)
         if not argv:
             yield {"type": "error", "message": "The claude command was not found on the PC."}
             return
