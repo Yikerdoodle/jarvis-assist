@@ -45,6 +45,42 @@ class EnvTests(unittest.TestCase):
         self.assertEqual(cleaned, {"PATH": "p", "USERPROFILE": "h", "CLAUDE_CONFIG_DIR_NOT_A_THING": "keep-me?"})
 
 
+class FindClaudeTests(unittest.TestCase):
+    def _make(self, root, *parts):
+        path = os.path.join(root, *parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as handle:
+            handle.write("")
+        return path
+
+    def _find(self, local):
+        from unittest import mock
+        from jarvis_bridge import engines
+        env = {"LOCALAPPDATA": local, "APPDATA": os.path.join(local, "no-roaming")}
+        with mock.patch.dict(os.environ, env), mock.patch.object(engines.shutil, "which", return_value=None):
+            os.environ.pop("JARVIS_CLAUDE_BIN", None)
+            return engines.find_claude()
+
+    def test_finds_the_command_in_the_newer_data_folder(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as local:
+            expected = self._make(local, "Claude-Data", "pkg", "claude-code", "2.1.309", "abc", "claude.exe")
+            self.assertEqual(self._find(local), expected)
+
+    def test_prefers_the_newest_version_across_both_places(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as local:
+            self._make(local, "Packages", "Claude_x", "LocalCache", "Roaming", "Claude", "claude-code", "2.1.9", "h",
+                       "claude.exe")
+            expected = self._make(local, "Claude-Data", "pkg", "claude-code", "2.1.10", "h", "claude.exe")
+            self.assertEqual(self._find(local), expected)
+
+    def test_nothing_found_gives_none(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as local:
+            self.assertIsNone(self._find(local))
+
+
 class AuthTests(unittest.TestCase):
     def test_token(self):
         self.assertTrue(token_ok("Bearer abc", "abc"))
