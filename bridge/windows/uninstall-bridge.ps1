@@ -4,6 +4,8 @@
 $ErrorActionPreference = 'SilentlyContinue'
 Stop-ScheduledTask -TaskName 'Jarvis bridge'
 Unregister-ScheduledTask -TaskName 'Jarvis bridge' -Confirm:$false
+Stop-ScheduledTask -TaskName 'Jarvis bridge (njk)'
+Unregister-ScheduledTask -TaskName 'Jarvis bridge (njk)' -Confirm:$false
 Get-NetFirewallRule -DisplayName 'Jarvis bridge (Tailscale only)' | Remove-NetFirewallRule
 Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" |
     Where-Object { $_.CommandLine -match 'jarvis_bridge' } |

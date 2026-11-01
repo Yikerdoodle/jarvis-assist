@@ -30,11 +30,18 @@ $user = (Get-CimInstance Win32_ComputerSystem).UserName
 if (-not $user) {
     throw 'Nobody is signed in at the screen. Sign in as the normal user, then run this again.'
 }
+# Windows tasks that name an account by its text name stop working if that account is renamed, so the task
+# uses the account's permanent ID (SID) instead.
+$userId = (New-Object Security.Principal.NTAccount($user)).Translate([Security.Principal.SecurityIdentifier]).Value
 $dataDir = Join-Path $bridgeDir 'data'
 Write-Host "Setting up the bridge for: $user"
 
 # Stop any earlier copy (for example one set up for the wrong account) so the port is free.
 Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+# Without administrator rights the same task can be made for your own account under this second name (a
+# normal user cannot replace the administrator's copy). Remove it so only one task starts the bridge.
+Stop-ScheduledTask -TaskName "$taskName (njk)" -ErrorAction SilentlyContinue
+Unregister-ScheduledTask -TaskName "$taskName (njk)" -Confirm:$false -ErrorAction SilentlyContinue
 Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" |
     Where-Object { $_.CommandLine -match 'jarvis_bridge' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
@@ -45,10 +52,10 @@ New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Pro
 Write-Host "Firewall rule added: TCP $port from Tailscale addresses only."
 
 $action = New-ScheduledTaskAction -Execute $pythonw -Argument '-m jarvis_bridge' -WorkingDirectory $bridgeDir
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
-$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+$principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Limited
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings `
     -Principal $principal -Force | Out-Null
 Write-Host "Scheduled task '$taskName' created for $user (starts at sign-in, runs hidden)."
